@@ -1,4 +1,12 @@
 # cloud-desktop
+## 依赖的python包
+使用以下两个代码需要安装uinput、pyocr和pillow，可以通过以下指令安装（建议使用虚拟环境）：
+```bash
+pip install python-uinput
+pip install pyocr
+pip install pillow
+```
+
 ## DelayTestByPic.py使用
 ### 云侧
 预先准备一张用于检测的纯色图片，例如本次使用的white.png，打开终端输入以下指令
@@ -26,7 +34,7 @@ sudo python DelayTestByPic.py
 
 ## DelayTestByOCR.py使用
 ### 云侧
-在云侧准备一个空的文本编辑器（建议使用VScode，字体加粗便于识别），然后保持此编辑器位于云桌面最上层
+在云侧准备一个空的文本编辑器（建议使用VScode，使用默认字体并加粗便于识别），然后保持此编辑器位于云桌面最上层
 
 ### 端侧
 通过获取鼠标指向的像素点位置来间接获取云侧文本编辑器输入框位置，需要的坐标分别为左上和右下（即指定一个矩形），在代码中修改检测位置，后续类比DelayTestByPic.py执行DelayTestByOCR.py
