@@ -7,40 +7,39 @@ import pyocr
 import pyocr.builders
 
 #初始化虚拟键盘
-keys = [
-    uinput.KEY_A,uinput.KEY_D,uinput.KEY_F,uinput.KEY_I,uinput.KEY_J,uinput.KEY_K,uinput.KEY_O,uinput.KEY_R,uinput.KEY_S,uinput.KEY_T,uinput.KEY_U,uinput.KEY_V,uinput.KEY_W,uinput.KEY_X,uinput.KEY_Y,uinput.KEY_Z,
-    uinput.KEY_ENTER,uinput.KEY_LEFTALT,uinput.KEY_TAB
+ALPHABET = [
+    ('a',uinput.KEY_A),('d',uinput.KEY_D),('f',uinput.KEY_F),('i',uinput.KEY_I),('j',uinput.KEY_J),('k',uinput.KEY_K),('o',uinput.KEY_O),('r',uinput.KEY_R),('s',uinput.KEY_S),('t',uinput.KEY_T),('u',uinput.KEY_U),('v',uinput.KEY_V),('w',uinput.KEY_W),('x',uinput.KEY_X),('y',uinput.KEY_Y),('z',uinput.KEY_Z)
 ]
-device = uinput.Device(keys)
-ab = ['a','d','f','i','j','k','o','r','s','t','u','v','w','x','y','z']
 
 #配置pyocr
 tool = pyocr.get_available_tools()[0]
 lang = "eng"
-block = (235,235,1800,600)  #指定输入框位置
+block = (120,160,1800,600)  #指定输入框位置
 
 #生成测试数据
 length = 1000
-inputkeys = []
-key = ''
-for i in range(length):
-    x = random.randint(0,len(ab)-1)
-    inputkeys.append(keys[x])
-    key = key + ab[x]
+keys_to_press = []
+expected_txt = []
+for _ in range(length):
+    ch, key = random.choice(ALPHABET)
+    keys_to_press.append(key)
+    expected_txt.append(ch)
+expected_txt = ''.join(expected_txt)
 
 #切换并输入测试数据
-time.sleep(1)
-device.emit_combo([uinput.KEY_LEFTALT,uinput.KEY_TAB])
-time.sleep(1)
-st = time.time()
-for i in range(length):
-    device.emit_click(inputkeys[i])
-    time.sleep(0.01)
-device.emit_combo([uinput.KEY_LEFTALT,uinput.KEY_TAB])
+with uinput.Device([x[1] for x in ALPHABET] + [uinput.KEY_ENTER,uinput.KEY_LEFTALT,uinput.KEY_TAB]) as device:
+    time.sleep(1)
+    device.emit_combo([uinput.KEY_LEFTALT,uinput.KEY_TAB])
+    time.sleep(1)
+    start = time.time()
+    for key in keys_to_press:
+        device.emit_click(key)
+        time.sleep(0.01)
+    device.emit_combo([uinput.KEY_LEFTALT,uinput.KEY_TAB])
 
 #检测是否显示完成
 txt = ''
-while txt != key:
+while txt != expected_txt:
     img = ImageGrab.grab(block)
     txt = tool.image_to_string(
         img,
@@ -48,4 +47,4 @@ while txt != key:
         builder=pyocr.builders.TextBuilder()
     )
     txt = "".join(filter(str.isalpha, txt))
-print((time.time()-st)/length)
+print('%.1f kps' % (len(expected_txt) / (time.time()-start)))
