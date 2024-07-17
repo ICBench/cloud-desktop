@@ -35,7 +35,7 @@ with uinput.Device([x[1] for x in ALPHABET] + [uinput.KEY_ENTER,uinput.KEY_LEFTA
     for key in keys_to_press:
         device.emit_click(key)
         time.sleep(0.01)
-    device.emit_combo([uinput.KEY_LEFTALT,uinput.KEY_TAB])
+    device.emit_combo([uinput.KEY_LEFTALT,uinput.KEY_TAB]) #在OCR识别时会很大概率把文本编辑器的光标识别为一个额外的字符或导致末尾字符不正确，因此切换回原窗口来使光标消失来避免此问题
 
 #检测是否显示完成
 txt = ''
