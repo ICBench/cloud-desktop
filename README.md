@@ -6,6 +6,11 @@ pip install python-uinput
 pip install pyocr
 pip install pillow
 ```
+由于Wayland与PIL库间存在兼容性问题，调用PIL时可能需要禁用Wayland：
+```bash
+#修改/etc/gdm3/custom.conf文件
+WaylandEnable=false  #将值改为false并取消注释以禁用Wayland
+```
 
 ## DelayTestByPic.py使用
 ### 云侧
