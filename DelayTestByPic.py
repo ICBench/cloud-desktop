@@ -16,6 +16,6 @@ st = time.time()
 p = (0,0,0)
 while p != (255,255,255):  #检测是否为白色即RGB值为(255,255,255)
     scshot = ImageGrab.grab()  #获取当前屏幕
-    p = scshot.getpixel((739,551))  #(739,551)为检测像素点位置，根据实际情况修改
+    p = scshot.getpixel((739,551))  #(739,551)为检测像素点位置，单位为px，根据实际情况修改
 ed = time.time()
 print(ed-st)
