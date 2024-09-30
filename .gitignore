@@ -1,0 +1,7 @@
+*_test.go
+/build
+*/build
+Makefile
+*.config
+*/tool
+*.tmp
