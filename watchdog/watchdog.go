@@ -1,12 +1,14 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"os"
-	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -14,64 +16,54 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+type watchFile struct {
+	Path string
+	Hash []string
+}
+
 var (
-	fileList = []string{
-		// watchdog
-		"/usr/bin/watchdog",
-		"/usr/bin/wtd_disc",
-		"/usr/lib/systemd/system/watchdog.service",
-		"/etc/systemd/system/multi-user.target.wants/watchdog.service",
-		// ssh/sshd
-		"/usr/sbin/sshd",
-		"/usr/lib/systemd/system/ssh.service",
-		"/etc/systemd/system/multi-user.target.wants/ssh.service",
-		"/usr/lib/systemd/system/ssh.socket",
-		"/etc/ssh/sshd_config",
-		"/usr/bin/forceCmd",
-		// x2go
-		"/usr/bin/x2goagent",
-		"/usr/bin/x2gobasepath",
-		"/usr/bin/x2gocmdexitmessage",
-		"/usr/bin/x2gofeature",
-		"/usr/bin/x2gofeaturelist",
-		"/usr/bin/x2gofm",
-		"/usr/bin/x2gogetapps",
-		"/usr/bin/x2gogetservers",
-		"/usr/bin/x2gokdrive",
-		"/usr/bin/x2gokdriveclient",
-		"/usr/bin/x2golistdesktops",
-		"/usr/bin/x2golistmounts",
-		"/usr/bin/x2golistsessions",
-		"/usr/bin/x2golistshadowsessions",
-		"/usr/bin/x2gomountdirs",
-		"/usr/bin/x2gooptionsstring",
-		"/usr/bin/x2gopath",
-		"/usr/bin/x2goprint",
-		"/usr/bin/x2goresume-session",
-		"/usr/bin/x2goruncommand",
-		"/usr/bin/x2goserver-run-extensions",
-		"/usr/bin/x2gosessionlimit",
-		"/usr/bin/x2gosetkeyboard",
-		"/usr/bin/x2gostartagent",
-		"/usr/bin/x2gosuspend-session",
-		"/usr/bin/x2goterminate-session",
-		"/usr/bin/x2goumount-session",
-		"/usr/bin/x2goversion",
-		"/usr/lib/systemd/system/x2goserver.service",
-		"/etc/systemd/system/multi-user.target.wants/x2goserver.service",
-		"/etc/x2go",
-		"/etc/x2go/x2go_logout.d",
-		"/etc/x2go/x2gosql",
-		"/etc/x2go/x2gosql/passwords",
-		"/etc/x2go/Xresources",
-		"/etc/x2go/Xsession.d",
-		"/etc/x2go/Xsession.options.d",
-	}
-	pidFileList = []string{
-		"/run/sshd.pid",
-		"/run/x2goserver.pid",
-	}
+	fileList    = []watchFile{}
+	pidFileList = []watchFile{}
 )
+
+func getFileSHA256(path string) string {
+	file, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("Get path's SHA256 failed: %v\n", err)
+	}
+	fileSHA := sha256.Sum256(file)
+	return hex.EncodeToString(fileSHA[:])
+}
+
+func loadConfig() {
+	path := "/etc/wtd/watchdog.config"
+	confBytes, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("Load config error: %v", err)
+		freeze()
+	}
+	json.Unmarshal(confBytes, &fileList)
+	for _, file := range fileList {
+		if strings.HasSuffix(file.Path, ".pid") {
+			pidFileList = append(pidFileList, file)
+			continue
+		}
+		if len(file.Hash) <= 0 {
+			continue
+		}
+		var f = true
+		nowHash := getFileSHA256(file.Path)
+		for _, hash := range file.Hash {
+			if hash == nowHash {
+				f = false
+			}
+		}
+		if f {
+			log.Printf("File changed: %v", file.Path)
+			freeze()
+		}
+	}
+}
 
 func freeze() {
 	syscall.Reboot(syscall.LINUX_REBOOT_CMD_HALT)
@@ -80,17 +72,16 @@ func freeze() {
 }
 
 func checkFile() {
-	fileList = append(fileList, pidFileList...)
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Print(err)
+		log.Println(err)
 		freeze()
 	}
 	defer watcher.Close()
 	for _, file := range fileList {
-		err = watcher.Add(file)
+		err = watcher.Add(file.Path)
 		if err != nil {
-			log.Printf("%v:%v", file, err)
+			log.Printf("%v:%v\n", file, err)
 			freeze()
 		}
 	}
@@ -98,7 +89,7 @@ func checkFile() {
 		select {
 		case event, ok := <-watcher.Events:
 			if !ok || event.Has(fsnotify.Chmod) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Write) || event.Has(fsnotify.Rename) {
-				log.Print(event)
+				log.Println(event)
 				freeze()
 			}
 		case err := <-watcher.Errors:
@@ -111,16 +102,16 @@ func checkFile() {
 func checkProcess() {
 	var pids []int
 	for _, pidFile := range pidFileList {
-		file, err := os.Open(pidFile)
+		file, err := os.Open(pidFile.Path)
 		if err != nil {
-			log.Printf("Load pid file failed: %v", err)
+			log.Printf("Load pid file failed: %v\n", err)
 			freeze()
 		}
 		reader := io.Reader(file)
 		var pid int
 		_, err = fmt.Fscanf(reader, "%d", &pid)
 		if err != nil {
-			log.Printf("Pid file error: %v", err)
+			log.Printf("Pid file error: %v\n", err)
 			freeze()
 		}
 		pids = append(pids, pid)
@@ -128,7 +119,7 @@ func checkProcess() {
 	for {
 		for _, pid := range pids {
 			if err := syscall.Kill(pid, 0); err != nil {
-				log.Print("Process dead")
+				log.Println("Process dead")
 				freeze()
 			}
 		}
@@ -137,9 +128,10 @@ func checkProcess() {
 }
 
 func main() {
+	loadConfig()
 	logfile, err := os.OpenFile("/var/log/wtd/watchdog.log", os.O_CREATE|os.O_APPEND|os.O_RDWR, os.ModePerm)
 	if err != nil {
-		log.Printf("Open log file Failed: %v", err)
+		log.Printf("Open log file Failed: %v\n", err)
 		freeze()
 	}
 	multiWriter := io.MultiWriter(logfile, os.Stdout)
