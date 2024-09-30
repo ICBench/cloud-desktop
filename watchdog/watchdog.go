@@ -1,9 +1,13 @@
 package main
 
 import (
+	"crypto"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
@@ -17,14 +21,21 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+type config struct {
+	Data      []watchFile
+	Signature string
+}
+
 type watchFile struct {
 	Path string
 	Hash []string
 }
 
 var (
-	fileList    = []watchFile{}
-	pidFileList = []watchFile{}
+	fileList       = []watchFile{}
+	pidFileList    = []watchFile{}
+	confPath       = "/etc/wtd/watchdog.config"
+	publicKeyBytes = []byte("-----BEGIN PUBLIC KEY-----\nMIICCgKCAgEAyckNe37ub3mI8cSgDIC7/8ok0a31law/QSwNSMdLbBPl3AUSEeCH\n4LldfwMJRkGHO3I8gbauWpA5UtX7wgLvMavFqESi5bex8CBkddETnGVq1YmX+zqU\nEUgrkvkXCrxMsjwWhZCbhI7O9FF/Z2BVwl9VUcHlPQ2sYaHdlUt13JXHu+37WFW7\nVEegjwyBoAYijndYGfQYJBtXsEo1dtBxqnsI2mXJPbVITlpsoqbxYyPUsV/5zBmo\nes6uR1M4oXZkTdCE4u7Ggt1OicwR48brPiCC4oNRrYNPZlGNeVnRwNsEi3YBKHqv\nC0LJhiK1k8MF/tS6l3SNsSfCIB0wSWhR7ELZbmFlk4q/Yga/wd2C08TX+n6CVd/c\nDYPS+HZzfLnqT2FLmnuk2DN66lhRrdAm+rNOQd92pxIEduPO5xoibvz++5icmX02\n5VN5CpwiQq9chvqb6Qpng4sLS870cDN9W7CXiUU3pc3up5HswppyhNjqH1ig0zcf\nolWQBFlMVOixsr9rkXwXrLWWZzvmB3e2pRhXd5Go7oQCZoQf03+Ju0Zc3lal7uaA\nJ4bYTolR9EJDWCvokGj7H3vsz9+/w/hoisl+MVbG5W4VAY/35xhNsQY15w6CWMbs\nMpjrRs295MWB3fdc/2Zyqh7+c1z5HlagZe0Xu67j5g6VEmqMdXmB/iUCAwEAAQ==\n-----END PUBLIC KEY-----\n")
 )
 
 func getFileSHA256(path string) string {
@@ -63,14 +74,46 @@ func checkHash(hashs []string, path string) {
 	}
 }
 
+func checkSign(conf config) {
+	block, rest := pem.Decode(publicKeyBytes)
+	if len(rest) != 0 || block == nil {
+		log.Println("Decode public key failed")
+		freeze()
+	}
+	publicKey, err := x509.ParsePKCS1PublicKey(block.Bytes)
+	if err != nil {
+		log.Printf("Parse public key failed: %v\n", err)
+		freeze()
+	}
+	data := conf.Data
+	dataBytes, err := json.MarshalIndent(data, "", "    ")
+	if err != nil {
+		log.Printf("Marshal data failed: %v\n", err)
+		freeze()
+	}
+	hash := sha256.Sum256(dataBytes)
+	signbytes, err := hex.DecodeString(conf.Signature)
+	if err != nil {
+		log.Printf("Decode signayure failed: %v\n", err)
+		freeze()
+	}
+	err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hash[:], signbytes)
+	if err != nil {
+		log.Printf("Signature authentication failed: %v\n", err)
+		freeze()
+	}
+}
+
 func loadConfig() {
-	path := "/etc/wtd/watchdog.config"
-	confBytes, err := os.ReadFile(path)
+	confBytes, err := os.ReadFile(confPath)
 	if err != nil {
 		log.Printf("Load config error: %v", err)
 		freeze()
 	}
-	json.Unmarshal(confBytes, &fileList)
+	var conf config
+	json.Unmarshal(confBytes, &conf)
+	checkSign(conf)
+	fileList = conf.Data
 	for _, file := range fileList {
 		if strings.HasSuffix(file.Path, ".pid") {
 			pidFileList = append(pidFileList, file)
