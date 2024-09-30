@@ -74,10 +74,8 @@ var (
 )
 
 func freeze() {
-	ifaces, _ := net.Interfaces()
-	for _, iface := range ifaces {
-		exec.Command("sudo", "ifconfig", iface.Name, "down").Run()
-	}
+	syscall.Reboot(syscall.LINUX_REBOOT_CMD_HALT)
+	// 理论上不会执行接下来的退出程序，因为系统被停止了
 	os.Exit(-1)
 }
 
