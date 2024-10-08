@@ -34,6 +34,9 @@ type watchFile struct {
 var (
 	fileList       = []watchFile{}
 	pidFileList    = []watchFile{}
+	fileWatcher    *fsnotify.Watcher
+	watchedFiles   = make(map[string]struct{})
+	watchedDirs    = make(map[string]struct{})
 	confPath       = "/etc/wtd/watchdog.config"
 	publicKeyBytes = []byte("-----BEGIN PUBLIC KEY-----\nMIICCgKCAgEAyckNe37ub3mI8cSgDIC7/8ok0a31law/QSwNSMdLbBPl3AUSEeCH\n4LldfwMJRkGHO3I8gbauWpA5UtX7wgLvMavFqESi5bex8CBkddETnGVq1YmX+zqU\nEUgrkvkXCrxMsjwWhZCbhI7O9FF/Z2BVwl9VUcHlPQ2sYaHdlUt13JXHu+37WFW7\nVEegjwyBoAYijndYGfQYJBtXsEo1dtBxqnsI2mXJPbVITlpsoqbxYyPUsV/5zBmo\nes6uR1M4oXZkTdCE4u7Ggt1OicwR48brPiCC4oNRrYNPZlGNeVnRwNsEi3YBKHqv\nC0LJhiK1k8MF/tS6l3SNsSfCIB0wSWhR7ELZbmFlk4q/Yga/wd2C08TX+n6CVd/c\nDYPS+HZzfLnqT2FLmnuk2DN66lhRrdAm+rNOQd92pxIEduPO5xoibvz++5icmX02\n5VN5CpwiQq9chvqb6Qpng4sLS870cDN9W7CXiUU3pc3up5HswppyhNjqH1ig0zcf\nolWQBFlMVOixsr9rkXwXrLWWZzvmB3e2pRhXd5Go7oQCZoQf03+Ju0Zc3lal7uaA\nJ4bYTolR9EJDWCvokGj7H3vsz9+/w/hoisl+MVbG5W4VAY/35xhNsQY15w6CWMbs\nMpjrRs295MWB3fdc/2Zyqh7+c1z5HlagZe0Xu67j5g6VEmqMdXmB/iUCAwEAAQ==\n-----END PUBLIC KEY-----\n")
 )
@@ -114,6 +117,7 @@ func loadConfig() {
 	json.Unmarshal(confBytes, &conf)
 	checkSign(conf)
 	fileList = conf.Data
+	pidFileList = []watchFile{}
 	for _, file := range fileList {
 		if strings.HasSuffix(file.Path, ".pid") {
 			pidFileList = append(pidFileList, file)
@@ -126,34 +130,83 @@ func loadConfig() {
 	}
 }
 
+func updateConfig() {
+	confWatcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Println(err)
+		freeze()
+	}
+	defer confWatcher.Close()
+	err = confWatcher.Add(confPath)
+	if err != nil {
+		log.Printf("Watch config file failed: %v\n", err)
+		freeze()
+	}
+	for {
+		select {
+		case event, ok := <-confWatcher.Events:
+			if !ok || event.Has(fsnotify.Chmod) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Write) || event.Has(fsnotify.Rename) {
+				log.Println(event)
+				loadConfig()
+				loadWatcher()
+				log.Println("Config change complete")
+			}
+		case err := <-confWatcher.Errors:
+			log.Println(err)
+			freeze()
+		}
+	}
+}
+
 func freeze() {
 	syscall.Reboot(syscall.LINUX_REBOOT_CMD_HALT)
 	// 理论上不会执行接下来的退出程序，因为系统被停止了
 	os.Exit(-1)
 }
 
-func checkFile() {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		log.Println(err)
-		freeze()
-	}
-	defer watcher.Close()
-	for _, file := range fileList {
-		err = watcher.Add(file.Path)
+func loadWatcher() {
+	var err error
+	if fileWatcher == nil {
+		fileWatcher, err = fsnotify.NewWatcher()
 		if err != nil {
-			log.Printf("%v:%v\n", file, err)
+			log.Println(err)
 			freeze()
 		}
 	}
+	for path := range watchedDirs {
+		err := fileWatcher.Remove(path)
+		if err != nil {
+			log.Printf("Update watcher failed: %v\n", err)
+		}
+	}
+	watchedFiles = make(map[string]struct{})
+	watchedDirs = make(map[string]struct{})
+	for _, file := range fileList {
+		path, _ := filepath.Abs(file.Path)
+		if strings.HasSuffix(path, ".pid") {
+			continue
+		}
+		dir := filepath.Dir(path)
+		watchedDirs[dir] = struct{}{}
+		watchedFiles[path] = struct{}{}
+		fileWatcher.Add(dir)
+	}
+}
+
+func checkFile() {
+	loadWatcher()
 	for {
 		select {
-		case event, ok := <-watcher.Events:
+		case event, ok := <-fileWatcher.Events:
 			if !ok || event.Has(fsnotify.Chmod) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Write) || event.Has(fsnotify.Rename) {
-				log.Println(event)
-				freeze()
+				path, _ := filepath.Abs(event.Name)
+				_, exist := watchedFiles[path]
+				if exist {
+					log.Println(event)
+					freeze()
+				}
 			}
-		case err := <-watcher.Errors:
+		case err := <-fileWatcher.Errors:
 			log.Println(err)
 			freeze()
 		}
@@ -193,6 +246,7 @@ func checkProcess() {
 
 func main() {
 	loadConfig()
+	go updateConfig()
 	logfile, err := os.OpenFile("/var/log/wtd/watchdog.log", os.O_CREATE|os.O_APPEND|os.O_RDWR, os.ModePerm)
 	if err != nil {
 		log.Printf("Open log file Failed: %v\n", err)
