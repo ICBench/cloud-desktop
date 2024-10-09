@@ -9,7 +9,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-var HOME string
+var home string
 
 func checkCmd(cmd string) bool {
 	_, args, err := shellwords.ParseWithEnvs(cmd)
@@ -62,7 +62,7 @@ func checkCmd(cmd string) bool {
 			}
 		}
 		if path == ".x2go/ssh" {
-			path = HOME + "/" + path
+			path = home + "/" + path
 			dirs, err := os.ReadDir(path)
 			if err != nil {
 				return true
@@ -72,7 +72,7 @@ func checkCmd(cmd string) bool {
 			if !strings.HasPrefix(path, ".x2go/") {
 				return false
 			}
-			path = HOME + "/" + path
+			path = home + "/" + path
 			dirs, err := os.ReadDir(path)
 			if err != nil {
 				return true
@@ -148,21 +148,21 @@ func parseCmd(script string) []string {
 }
 
 func main() {
-	SSH_ORIGINAL_COMMAND := os.Getenv("SSH_ORIGINAL_COMMAND")
-	HOME = os.Getenv("HOME")
-	cmd := parseCmd(SSH_ORIGINAL_COMMAND)
+	sshOriginalCmd := os.Getenv("SSH_ORIGINAL_COMMAND")
+	home = os.Getenv("HOME")
+	cmd := parseCmd(sshOriginalCmd)
 	// Temporarily release ssh&&scp
-	if SSH_ORIGINAL_COMMAND == "" {
+	if sshOriginalCmd == "" {
 		syscall.Exec("/bin/bash", []string{"bash", "-il"}, os.Environ())
 		return
 	}
 	_, args, _ := shellwords.ParseWithEnvs(cmd[0])
 	if args[0] == "/usr/lib/openssh/sftp-server" {
-		syscall.Exec("/bin/bash", []string{"bash", "-c", SSH_ORIGINAL_COMMAND}, os.Environ())
+		syscall.Exec("/bin/bash", []string{"bash", "-c", sshOriginalCmd}, os.Environ())
 		return
 	}
 	// Temporarily release ssh&&scp
 	if len(cmd) == 1 && checkCmd(cmd[0]) {
-		syscall.Exec("/bin/bash", []string{"bash", "-c", SSH_ORIGINAL_COMMAND}, os.Environ())
+		syscall.Exec("/bin/bash", []string{"bash", "-c", sshOriginalCmd}, os.Environ())
 	}
 }
