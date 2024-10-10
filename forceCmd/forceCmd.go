@@ -1,7 +1,10 @@
 package main
 
 import (
+	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -16,12 +19,22 @@ func checkCmd(cmd string) bool {
 	if err != nil {
 		return false
 	}
-	args[0] = strings.TrimPrefix(args[0], "/usr/bin/")
-	switch args[0] {
+	path, err := exec.LookPath(args[0])
+	if err != nil {
+		return true
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		log.Printf("Parse path error: %v\n", err)
+		return false
+	}
+	if !strings.HasPrefix(path, "/usr/bin") {
+		return false
+	}
+	path = strings.TrimPrefix(path, "/usr/bin/")
+	switch path {
 	case
 		"echo",
-		"export",
-		"exit",
 		"x2goagent",
 		"x2gobasepath",
 		"x2gocmdexitmessage",
