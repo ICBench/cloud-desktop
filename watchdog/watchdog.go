@@ -15,8 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
-	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -33,18 +31,21 @@ type fileConf struct {
 
 var (
 	fileList       = []fileConf{}
-	procList       = []fileConf{}
+	procList       = make(map[string][]string)
 	fileWatcher    *fsnotify.Watcher
-	watchedFiles   = make(map[string]struct{})
-	watchedDirs    = make(map[string]struct{})
+	watchedFile    = make(map[string]struct{})
+	watchedDir     = make(map[string]struct{})
+	procWatcher    *fsnotify.Watcher
+	watchedProc    = make(map[string]struct{})
 	confPath       = "/etc/wtd/watchdog.config"
 	publicKeyBytes = []byte("-----BEGIN PUBLIC KEY-----\nMIICCgKCAgEAyckNe37ub3mI8cSgDIC7/8ok0a31law/QSwNSMdLbBPl3AUSEeCH\n4LldfwMJRkGHO3I8gbauWpA5UtX7wgLvMavFqESi5bex8CBkddETnGVq1YmX+zqU\nEUgrkvkXCrxMsjwWhZCbhI7O9FF/Z2BVwl9VUcHlPQ2sYaHdlUt13JXHu+37WFW7\nVEegjwyBoAYijndYGfQYJBtXsEo1dtBxqnsI2mXJPbVITlpsoqbxYyPUsV/5zBmo\nes6uR1M4oXZkTdCE4u7Ggt1OicwR48brPiCC4oNRrYNPZlGNeVnRwNsEi3YBKHqv\nC0LJhiK1k8MF/tS6l3SNsSfCIB0wSWhR7ELZbmFlk4q/Yga/wd2C08TX+n6CVd/c\nDYPS+HZzfLnqT2FLmnuk2DN66lhRrdAm+rNOQd92pxIEduPO5xoibvz++5icmX02\n5VN5CpwiQq9chvqb6Qpng4sLS870cDN9W7CXiUU3pc3up5HswppyhNjqH1ig0zcf\nolWQBFlMVOixsr9rkXwXrLWWZzvmB3e2pRhXd5Go7oQCZoQf03+Ju0Zc3lal7uaA\nJ4bYTolR9EJDWCvokGj7H3vsz9+/w/hoisl+MVbG5W4VAY/35xhNsQY15w6CWMbs\nMpjrRs295MWB3fdc/2Zyqh7+c1z5HlagZe0Xu67j5g6VEmqMdXmB/iUCAwEAAQ==\n-----END PUBLIC KEY-----\n")
 )
 
 func freeze() {
-	syscall.Reboot(syscall.LINUX_REBOOT_CMD_HALT)
+	log.Println("freeze!")
+	// syscall.Reboot(syscall.LINUX_REBOOT_CMD_HALT)
 	// 理论上不会执行接下来的退出程序，因为系统被停止了
-	os.Exit(-1)
+	// os.Exit(-1)
 }
 
 func getFileSHA256(path string) string {
@@ -122,10 +123,15 @@ func loadConfig() {
 	var conf config
 	json.Unmarshal(confBytes, &conf)
 	checkSign(conf)
-	procList = []fileConf{}
+	procList = make(map[string][]string)
 	for _, file := range conf.Data {
 		if strings.HasSuffix(file.Path, ".pid") {
-			procList = append(procList, file)
+			absPath, err := filepath.Abs(file.Path)
+			if err != nil {
+				log.Printf("Config error: %v\n", err)
+				freeze()
+			}
+			procList[absPath] = file.Hash
 			continue
 		} else {
 			fileList = append(fileList, file)
@@ -137,7 +143,7 @@ func loadConfig() {
 	}
 }
 
-func loadWatcher() {
+func loadFileWatcher() {
 	var err error
 	if fileWatcher == nil {
 		fileWatcher, err = fsnotify.NewWatcher()
@@ -146,26 +152,54 @@ func loadWatcher() {
 			freeze()
 		}
 	}
-	for path := range watchedDirs {
+	for path := range watchedDir {
 		err := fileWatcher.Remove(path)
 		if err != nil {
 			log.Printf("Update watcher failed: %v\n", err)
+			freeze()
 		}
 	}
-	watchedFiles = make(map[string]struct{})
-	watchedDirs = make(map[string]struct{})
+	watchedFile = make(map[string]struct{})
+	watchedDir = make(map[string]struct{})
 	for _, file := range fileList {
 		path, _ := filepath.Abs(file.Path)
 		dir := filepath.Dir(path)
-		watchedDirs[dir] = struct{}{}
-		watchedFiles[path] = struct{}{}
+		watchedDir[dir] = struct{}{}
+		watchedFile[path] = struct{}{}
 		fileWatcher.Add(dir)
 	}
 }
 
+func loadProcWatcher() {
+	var err error
+	if procWatcher == nil {
+		procWatcher, err = fsnotify.NewWatcher()
+		if err != nil {
+			log.Println(err)
+			freeze()
+		}
+	}
+	for path := range watchedProc {
+		err := procWatcher.Remove(path)
+		if err != nil {
+			log.Printf("Update watcher failed: %v\n", err)
+			freeze()
+		}
+	}
+	watchedProc = make(map[string]struct{})
+	for file := range procList {
+		path, _ := filepath.Abs(file)
+		watchedProc[path] = struct{}{}
+		procWatcher.Add(path)
+	}
+}
+
+func loadWatcher() {
+	loadFileWatcher()
+	loadProcWatcher()
+}
+
 func watchConfig() {
-	loadConfig()
-	loadWatcher()
 	confWatcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Println(err)
@@ -197,9 +231,13 @@ func watchFile() {
 	for {
 		select {
 		case event, ok := <-fileWatcher.Events:
-			if !ok || event.Has(fsnotify.Chmod) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Write) || event.Has(fsnotify.Rename) {
+			if !ok {
+				log.Println("Watcher error!")
+				freeze()
+			}
+			if event.Has(fsnotify.Chmod) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Write) || event.Has(fsnotify.Rename) {
 				path, _ := filepath.Abs(event.Name)
-				_, exist := watchedFiles[path]
+				_, exist := watchedFile[path]
 				if exist {
 					log.Println(event)
 					freeze()
@@ -214,36 +252,48 @@ func watchFile() {
 
 func watchProc() {
 	for {
-		for _, pidFile := range procList {
-			file, err := os.Open(pidFile.Path)
-			if err != nil {
-				log.Printf("Load pid file failed: %v\n", err)
+		select {
+		case event, ok := <-procWatcher.Events:
+			if !ok {
+				log.Println("Watcher error!")
 				freeze()
 			}
-			reader := io.Reader(file)
-			var pid int
-			_, err = fmt.Fscanf(reader, "%d", &pid)
-			if err != nil {
-				log.Printf("Pid file error: %v\n", err)
-				freeze()
+			if event.Has(fsnotify.Chmod) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Write) || event.Has(fsnotify.Rename) {
+				path, _ := filepath.Abs(event.Name)
+				file, err := os.Open(path)
+				if err != nil {
+					log.Printf("Load pid file failed: %v\n", err)
+					freeze()
+				}
+				reader := io.Reader(file)
+				var pid int
+				_, err = fmt.Fscanf(reader, "%d", &pid)
+				if err != nil {
+					log.Printf("Pid file error: %v\n", err)
+					freeze()
+				}
+				exePath, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+				if err != nil {
+					log.Printf("Load process path failed: %v\n", err)
+					freeze()
+				}
+				exePath, err = filepath.Abs(exePath)
+				if err != nil {
+					log.Printf("Load process abs path failed: %v\n", err)
+					freeze()
+				}
+				checkHash(procList[path], exePath)
 			}
-			exePath, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-			if err != nil {
-				log.Printf("Load process path failed: %v\n", err)
-				freeze()
-			}
-			exePath, err = filepath.Abs(exePath)
-			if err != nil {
-				log.Printf("Load process abs path failed: %v\n", err)
-				freeze()
-			}
-			checkHash(pidFile.Hash, exePath)
+		case err := <-procWatcher.Errors:
+			log.Println(err)
+			freeze()
 		}
-		time.Sleep(50 * time.Microsecond)
 	}
 }
 
 func main() {
+	loadConfig()
+	loadWatcher()
 	logfile, err := os.OpenFile("/var/log/wtd/watchdog.log", os.O_CREATE|os.O_APPEND|os.O_RDWR, os.ModePerm)
 	if err != nil {
 		log.Printf("Open log file Failed: %v\n", err)
