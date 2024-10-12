@@ -28,41 +28,37 @@ func checkCmd(cmd string) bool {
 		log.Printf("Parse path error: %v\n", err)
 		return false
 	}
-	if !strings.HasPrefix(path, "/usr/bin") {
-		return false
-	}
-	path = strings.TrimPrefix(path, "/usr/bin/")
 	switch path {
 	case
-		"echo",
-		"x2goagent",
-		"x2gobasepath",
-		"x2gocmdexitmessage",
-		"x2gofeature",
-		"x2gofeaturelist",
-		"x2gofm",
-		"x2gogetapps",
-		"x2gogetservers",
-		"x2gokdrive",
-		"x2gokdriveclient",
-		"x2golistdesktops",
-		"x2golistmounts",
-		"x2golistsessions",
-		"x2golistshadowsessions",
-		"x2gomountdirs",
-		"x2gooptionsstring",
-		"x2gopath",
-		"x2goprint",
-		"x2goresume-session",
-		"x2goruncommand",
-		"x2goserver-run-extensions",
-		"x2gosessionlimit",
-		"x2gosetkeyboard",
-		"x2gostartagent",
-		"x2gosuspend-session",
-		"x2goterminate-session",
-		"x2goumount-session",
-		"x2goversion":
+		"/usr/bin/echo",
+		"/usr/bin/x2goagent",
+		"/usr/bin/x2gobasepath",
+		"/usr/bin/x2gocmdexitmessage",
+		"/usr/bin/x2gofeature",
+		"/usr/bin/x2gofeaturelist",
+		"/usr/bin/x2gofm",
+		"/usr/bin/x2gogetapps",
+		"/usr/bin/x2gogetservers",
+		"/usr/bin/x2gokdrive",
+		"/usr/bin/x2gokdriveclient",
+		"/usr/bin/x2golistdesktops",
+		"/usr/bin/x2golistmounts",
+		"/usr/bin/x2golistsessions",
+		"/usr/bin/x2golistshadowsessions",
+		"/usr/bin/x2gomountdirs",
+		"/usr/bin/x2gooptionsstring",
+		"/usr/bin/x2gopath",
+		"/usr/bin/x2goprint",
+		"/usr/bin/x2goresume-session",
+		"/usr/bin/x2goruncommand",
+		"/usr/bin/x2goserver-run-extensions",
+		"/usr/bin/x2gosessionlimit",
+		"/usr/bin/x2gosetkeyboard",
+		"/usr/bin/x2gostartagent",
+		"/usr/bin/x2gosuspend-session",
+		"/usr/bin/x2goterminate-session",
+		"/usr/bin/x2goumount-session",
+		"/usr/bin/x2goversion":
 		return true
 	case "scp":
 		path := ""
