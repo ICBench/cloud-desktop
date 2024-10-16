@@ -23,20 +23,30 @@ type fileConf struct {
 	Hash []string
 }
 
-func getFileSHA256(path string) string {
+func getFileSHA256(path string) (string, error) {
 	file, err := os.ReadFile(path)
 	if err != nil {
 		log.Printf("Get path's SHA256 failed: %v\n", err)
+		return "", err
 	}
 	fileSHA := sha256.Sum256(file)
-	return hex.EncodeToString(fileSHA[:])
+	return hex.EncodeToString(fileSHA[:]), nil
 }
 
 func getFileConf(files []string) {
 	var data []fileConf
 	for _, file := range files {
-		path, _ := filepath.Abs(file)
-		data = append(data, fileConf{Path: path, Hash: []string{getFileSHA256(path)}})
+		path, err := filepath.Abs(file)
+		if err != nil {
+			log.Printf("Get %v config failed: %v", file, err)
+			continue
+		}
+		fileHash, err := getFileSHA256(path)
+		if err != nil {
+			log.Printf("Get %v hash failed: %v", file, err)
+			continue
+		}
+		data = append(data, fileConf{Path: path, Hash: []string{fileHash}})
 	}
 	createConfFile(data)
 }
@@ -45,14 +55,27 @@ func getDirConfig(dirs []string, filter string) {
 	var data []fileConf
 	for _, dir := range dirs {
 		filepath.Walk(dir, func(path string, info fs.FileInfo, err error) error {
+			if err != nil {
+				log.Printf("Access %v error: %v", path, err)
+				return nil
+			}
 			if !strings.Contains(path, filter) {
 				return nil
 			}
-			path, _ = filepath.Abs(path)
+			path, err = filepath.Abs(path)
+			if err != nil {
+				log.Printf("Get %v config failed: %v", path, err)
+				return nil
+			}
 			if info.IsDir() {
 				data = append(data, fileConf{Path: path, Hash: []string{}})
 			} else {
-				data = append(data, fileConf{Path: path, Hash: []string{getFileSHA256(path)}})
+				fileHash, err := getFileSHA256(path)
+				if err != nil {
+					log.Printf("Get %v hash failed: %v", path, err)
+					return nil
+				}
+				data = append(data, fileConf{Path: path, Hash: []string{fileHash}})
 			}
 			return nil
 		})
@@ -65,9 +88,21 @@ func createConfFile(data []fileConf) {
 		Data:   data,
 		DryRun: true,
 	}
-	dataBytes, _ := yaml.Marshal(conf)
-	file, _ := os.OpenFile("watchdog.yaml", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	file.Write(dataBytes)
+	dataBytes, err := yaml.Marshal(conf)
+	if err != nil {
+		log.Printf("Marshal config err: %v", err)
+		os.Exit(-1)
+	}
+	file, err := os.OpenFile("watchdog.yaml", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		log.Printf("Open config file err: %v", err)
+		os.Exit(-1)
+	}
+	_, err = file.Write(dataBytes)
+	if err != nil {
+		log.Printf("Write config file err: %v", err)
+		os.Exit(-1)
+	}
 }
 
 func main() {
