@@ -77,7 +77,34 @@ func checkCmd(cmd string) bool {
 			if err != nil {
 				return true
 			}
-			return len(dirs) <= 0
+			if len(dirs) >= 10 {
+				return false
+			}
+			f := true
+			for _, dir := range dirs {
+				var maxSize int
+				if dir.IsDir() || (dir.Type()&os.ModeSymlink) != 0 {
+					return false
+				}
+				fileName := dir.Name()
+				if !strings.HasPrefix(fileName, "key.") {
+					return false
+				}
+				if strings.HasSuffix(fileName, ".ident") {
+					maxSize = 1000
+				} else {
+					maxSize = 4000
+				}
+				stat, err := os.Stat(path + "/" + dir.Name())
+				if err != nil {
+					f = false
+				}
+				size := stat.Size()
+				if size > int64(maxSize) {
+					f = false
+				}
+			}
+			return f
 		} else {
 			if !strings.HasPrefix(path, ".x2go/") {
 				return false
@@ -108,6 +135,10 @@ func checkCmd(cmd string) bool {
 					}
 					file.Close()
 					maxSize = 1
+				case ".pulse-client.conf":
+					maxSize = 1000
+				case ".pulse-cookie":
+					maxSize = 1000
 				default:
 					maxSize = 0
 				}
