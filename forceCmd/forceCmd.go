@@ -61,7 +61,7 @@ func checkCmd(cmd string) bool {
 		"/usr/bin/x2goumount-session",
 		"/usr/bin/x2goversion":
 		return true
-	case "scp":
+	case "/usr/bin/scp":
 		path := ""
 		for i := 1; i < len(args); i++ {
 			if args[i] != "-t" && args[i] != "-r" {
@@ -122,9 +122,9 @@ func checkCmd(cmd string) bool {
 			}
 			return f
 		}
-	case "setsid":
+	case "/usr/bin/setsid":
 		return checkCmd(args[1])
-	case "bash":
+	case "/usr/bin/bash":
 		var script = ""
 		for i := 1; i < len(args); i++ {
 			if args[i] != "-l" && args[i] != "-c" {
