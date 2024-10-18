@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/coreos/go-systemd/v22/journal"
 	"github.com/mattn/go-shellwords"
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -173,5 +174,7 @@ func main() {
 	// Temporarily release ssh&&scp
 	if len(cmd) == 1 && checkCmd(cmd[0]) {
 		syscall.Exec("/bin/bash", []string{"bash", "-c", sshOriginalCmd}, os.Environ())
+	} else {
+		journal.Print(journal.PriNotice, "Reject cmd: %v\n", sshOriginalCmd)
 	}
 }
