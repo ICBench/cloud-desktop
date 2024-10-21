@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -188,7 +189,14 @@ func parseCmd(script string) []string {
 	return cmds
 }
 
+func setSelfPriority(priority int) {
+	pid := os.Getpid()
+	cmd := exec.Command("sudo", "renice", "-n", strconv.Itoa(priority), "-p", strconv.Itoa(pid))
+	cmd.Run()
+}
+
 func main() {
+	setSelfPriority(-20)
 	sshOriginalCmd := os.Getenv("SSH_ORIGINAL_COMMAND")
 	home = os.Getenv("HOME")
 	cmd := parseCmd(sshOriginalCmd)
