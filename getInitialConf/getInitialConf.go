@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -69,11 +68,16 @@ var (
 		"/etc/x2go/x2gosql",
 		"/etc/x2go/x2gosql/passwords",
 	}
-	procList = []string{
-		"/run/x2goserver.pid",
-		"/run/sshd.pid",
+	procList = []procPair{
+		{PidPath: "/run/x2goserver.pid", ExePath: "/usr/bin/perl"},
+		{"/run/sshd.pid", "/usr/sbin/sshd"},
 	}
 )
+
+type procPair struct {
+	PidPath string
+	ExePath string
+}
 
 type config struct {
 	Data   []fileConf
@@ -136,31 +140,15 @@ func getConfig(inputPath, outputPath string) {
 		}
 		conf[absPath] = map[string]struct{}{}
 	}
-	for _, pidFilePath := range procList {
-		absPidPath, err := filepath.Abs(pidFilePath)
+	for _, proc := range procList {
+		absPidPath, err := filepath.Abs(proc.PidPath)
 		if err != nil {
-			log.Printf("Get process pid file %v abs path err: %v\n", pidFilePath, err)
+			log.Printf("Get process pid file %v abs path err: %v\n", proc.PidPath, err)
 			continue
 		}
-		pidFile, err := os.Open(absPidPath)
+		absExePath, err := filepath.Abs(proc.ExePath)
 		if err != nil {
-			log.Printf("Access process pid file %v err: %v\n", pidFilePath, err)
-			continue
-		}
-		var pid int
-		_, err = fmt.Fscanf(pidFile, "%d", &pid)
-		if err != nil {
-			log.Printf("Read pid from file %v err: %v\n", pidFilePath, err)
-			continue
-		}
-		exePath, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-		if err != nil {
-			log.Printf("Access real exe file of %v err: %v\n", pidFilePath, err)
-			continue
-		}
-		absExePath, err := filepath.Abs(exePath)
-		if err != nil {
-			log.Printf("Get exe file %v abs path err: %v\n", exePath, err)
+			log.Printf("Get exe file %v abs path err: %v\n", proc.ExePath, err)
 			continue
 		}
 		hash, err := getFileSHA256(absExePath)
