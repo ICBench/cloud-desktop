@@ -81,7 +81,6 @@ func checkCmd(cmd string) bool {
 			if len(dirs) >= 10 {
 				return false
 			}
-			f := true
 			for _, dir := range dirs {
 				var maxSize int
 				if dir.IsDir() || (dir.Type()&os.ModeSymlink) != 0 {
@@ -98,14 +97,14 @@ func checkCmd(cmd string) bool {
 				}
 				stat, err := os.Stat(path + "/" + dir.Name())
 				if err != nil {
-					f = false
+					return false
 				}
 				size := stat.Size()
 				if size > int64(maxSize) {
-					f = false
+					return false
 				}
 			}
-			return f
+			return true
 		} else {
 			if !strings.HasPrefix(path, ".x2go/") {
 				return false
@@ -115,7 +114,6 @@ func checkCmd(cmd string) bool {
 			if err != nil {
 				return true
 			}
-			f := true
 			for _, dir := range dirs {
 				var maxSize = 0
 				switch dir.Name() {
@@ -132,7 +130,7 @@ func checkCmd(cmd string) bool {
 				case "session.log":
 					file, err := os.OpenFile(path+"/"+dir.Name(), os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0777)
 					if err != nil {
-						f = false
+						return false
 					}
 					file.Close()
 					maxSize = 1
@@ -145,14 +143,14 @@ func checkCmd(cmd string) bool {
 				}
 				stat, err := os.Stat(path + "/" + dir.Name())
 				if err != nil {
-					f = false
+					return false
 				}
 				size := stat.Size()
 				if size > int64(maxSize) {
-					f = false
+					return false
 				}
 			}
-			return f
+			return true
 		}
 	case "/usr/bin/setsid":
 		return checkCmd(args[1])
@@ -166,12 +164,13 @@ func checkCmd(cmd string) bool {
 				script = args[i]
 			}
 		}
-		var f = true
 		cmds := parseCmd(script)
 		for _, cmd := range cmds {
-			f = f && checkCmd(cmd)
+			if !checkCmd(cmd) {
+				return false
+			}
 		}
-		return f
+		return true
 	default:
 		return false
 	}
