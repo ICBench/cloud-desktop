@@ -13,6 +13,7 @@ import (
 
 var (
 	fileList = []string{
+		// X2Go
 		"/usr/bin/perl",
 		"/usr/bin/x2goagent",
 		"/usr/bin/x2gobasepath",
@@ -51,13 +52,20 @@ var (
 		"/etc/x2go/x2gosql/sql",
 		"/usr/lib/systemd/system/x2goserver.service",
 		"/etc/systemd/system/multi-user.target.wants/x2goserver.service",
+		// ssh
 		"/usr/sbin/sshd",
 		"/usr/lib/systemd/system/ssh.service",
 		"/etc/systemd/system/multi-user.target.wants/ssh.service",
 		"/usr/lib/systemd/system/ssh.socket",
 		"/etc/ssh/sshd_config",
+		// watchdog
 		"/usr/lib/systemd/system/watchdog.service",
 		"/etc/systemd/system/multi-user.target.wants/watchdog.service",
+		// other
+		"/usr/bin/echo",
+		"/usr/bin/bash",
+		"/usr/bin/scp",
+		"/usr/bin/setsid",
 	}
 	dirList = []string{
 		"/etc/x2go",
