@@ -15,6 +15,7 @@ import (
 )
 
 var home string
+var flag bool
 
 func checkCmd(cmd string) bool {
 	_, args, err := shellwords.ParseWithEnvs(cmd)
@@ -61,6 +62,9 @@ func checkCmd(cmd string) bool {
 		"/usr/bin/x2goterminate-session",
 		"/usr/bin/x2goumount-session",
 		"/usr/bin/x2goversion":
+		if path == "/usr/bin/x2goruncommand" {
+			flag = false
+		}
 		return true
 	case "/usr/bin/scp":
 		path := ""
@@ -195,7 +199,6 @@ func setSelfPriority(priority int) {
 }
 
 func main() {
-	setSelfPriority(-20)
 	sshOriginalCmd := os.Getenv("SSH_ORIGINAL_COMMAND")
 	home = os.Getenv("HOME")
 	cmd := parseCmd(sshOriginalCmd)
@@ -210,7 +213,11 @@ func main() {
 		return
 	}
 	// Temporarily release ssh&&scp
+	flag = true
 	if len(cmd) == 1 && checkCmd(cmd[0]) {
+		if flag {
+			setSelfPriority(-11)
+		}
 		syscall.Exec("/bin/bash", []string{"bash", "-c", sshOriginalCmd}, os.Environ())
 	} else {
 		journal.Print(journal.PriNotice, "Reject cmd: %v\n", sshOriginalCmd)
