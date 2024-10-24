@@ -60,16 +60,14 @@ func getFileSHA256(path string) (string, error) {
 	return hex.EncodeToString(fileSHA[:]), nil
 }
 
-func checkDir(path string) {
+func checkDir(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {
 		journal.Print(journal.PriAlert, "Load %v state failed: %v\n", path, err)
 		freeze()
+		return false
 	}
-	if !info.IsDir() {
-		journal.Print(journal.PriAlert, "%v should be a dir\n", path)
-		freeze()
-	}
+	return info.IsDir()
 }
 
 func checkHash(hashs []string, path string) {
@@ -226,7 +224,7 @@ func watchFile() {
 		freeze()
 		os.Exit(-1)
 	}
-	watchedFile := make(map[string]struct{})
+	watchedFile := make(map[string][]string)
 	for {
 		select {
 		case event, ok := <-fileWatcher.Events:
@@ -235,17 +233,33 @@ func watchFile() {
 				freeze()
 				os.Exit(-1)
 			}
-			if event.Has(fsnotify.Chmod) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Write) || event.Has(fsnotify.Rename) {
-				path, _ := filepath.Abs(event.Name)
-				_, exist := watchedFile[path]
-				if exist {
-					journal.Print(journal.PriAlert, "File changed: %v\n", event)
+			path, _ := filepath.Abs(event.Name)
+			_, exist := watchedFile[filepath.Dir(path)]
+			if exist {
+				journal.Print(journal.PriAlert, "File changed: %v\n", event)
+				freeze()
+				continue
+			}
+			hashs, exist := watchedFile[path]
+			if !exist {
+				continue
+			}
+			if len(hashs) <= 0 {
+				journal.Print(journal.PriAlert, "File changed: %v\n", event)
+				freeze()
+				continue
+			} else {
+				if checkDir(path) {
+					journal.Print(journal.PriAlert, "%v is a dir\n", path)
 					freeze()
+					continue
 				}
-				_, exist = watchedFile[filepath.Dir(path)]
-				if exist {
+				if event.Has(fsnotify.Create) || event.Has(fsnotify.Write) {
+					checkHash(hashs, path)
+				} else {
 					journal.Print(journal.PriAlert, "File changed: %v\n", event)
 					freeze()
+					continue
 				}
 			}
 		case err := <-fileWatcher.Errors:
@@ -253,17 +267,21 @@ func watchFile() {
 			freeze()
 			os.Exit(-1)
 		case newWatchFile := <-fileWatcherChan:
-			watchedFile = make(map[string]struct{})
+			watchedFile = make(map[string][]string)
 			newWatchDir := make(map[string]struct{})
 			for path, hashs := range newWatchFile {
 				if len(hashs) <= 0 {
-					checkDir(path)
+					if !checkDir(path) {
+						journal.Print(journal.PriAlert, "%v should be a dir\n", path)
+						freeze()
+						continue
+					}
 					newWatchDir[path] = struct{}{}
 				} else {
 					checkHash(hashs, path)
 					newWatchDir[filepath.Dir(path)] = struct{}{}
 				}
-				watchedFile[path] = struct{}{}
+				watchedFile[path] = hashs
 			}
 			watchedDir := fileWatcher.WatchList()
 			for _, path := range watchedDir {
