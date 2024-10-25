@@ -15,22 +15,26 @@ import (
 )
 
 var home string
-var flag bool
 
-func checkCmd(cmd string) bool {
+func checkCmd(cmd string) (cmdList []string, allow bool) {
+	allow = true
 	_, args, err := shellwords.ParseWithEnvs(cmd)
 	if err != nil {
-		return false
+		allow = false
+		return
 	}
 	path, err := exec.LookPath(args[0])
 	if err != nil {
-		return true
+		allow = true
+		return
 	}
 	path, err = filepath.Abs(path)
 	if err != nil {
 		log.Printf("Parse path error: %v\n", err)
-		return false
+		allow = false
+		return
 	}
+	cmdList = append(cmdList, path)
 	switch path {
 	case
 		"/usr/bin/echo",
@@ -62,16 +66,15 @@ func checkCmd(cmd string) bool {
 		"/usr/bin/x2goterminate-session",
 		"/usr/bin/x2goumount-session",
 		"/usr/bin/x2goversion":
-		if path == "/usr/bin/x2goruncommand" {
-			flag = false
-		}
-		return true
+		allow = true
+		return
 	case "/usr/bin/scp":
 		path := ""
 		for i := 1; i < len(args); i++ {
 			if args[i] != "-t" && args[i] != "-r" {
 				if path != "" {
-					return false
+					allow = false
+					return
 				}
 				path = args[i]
 			}
@@ -80,19 +83,23 @@ func checkCmd(cmd string) bool {
 			path = home + "/" + path
 			dirs, err := os.ReadDir(path)
 			if err != nil {
-				return true
+				allow = true
+				return
 			}
 			if len(dirs) >= 10 {
-				return false
+				allow = false
+				return
 			}
 			for _, dir := range dirs {
 				var maxSize int
 				if dir.IsDir() || (dir.Type()&os.ModeSymlink) != 0 {
-					return false
+					allow = false
+					return
 				}
 				fileName := dir.Name()
 				if !strings.HasPrefix(fileName, "key.") {
-					return false
+					allow = false
+					return
 				}
 				if strings.HasSuffix(fileName, ".ident") {
 					maxSize = 1000
@@ -101,22 +108,27 @@ func checkCmd(cmd string) bool {
 				}
 				stat, err := os.Stat(path + "/" + dir.Name())
 				if err != nil {
-					return false
+					allow = false
+					return
 				}
 				size := stat.Size()
 				if size > int64(maxSize) {
-					return false
+					allow = false
+					return
 				}
 			}
-			return true
+			allow = true
+			return
 		} else {
 			if !strings.HasPrefix(path, ".x2go/") {
-				return false
+				allow = false
+				return
 			}
 			path = home + "/" + path
 			dirs, err := os.ReadDir(path)
 			if err != nil {
-				return true
+				allow = true
+				return
 			}
 			for _, dir := range dirs {
 				var maxSize = 0
@@ -134,7 +146,8 @@ func checkCmd(cmd string) bool {
 				case "session.log":
 					file, err := os.OpenFile(path+"/"+dir.Name(), os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0777)
 					if err != nil {
-						return false
+						allow = false
+						return
 					}
 					file.Close()
 					maxSize = 1
@@ -147,14 +160,17 @@ func checkCmd(cmd string) bool {
 				}
 				stat, err := os.Stat(path + "/" + dir.Name())
 				if err != nil {
-					return false
+					allow = false
+					return
 				}
 				size := stat.Size()
 				if size > int64(maxSize) {
-					return false
+					allow = false
+					return
 				}
 			}
-			return true
+			allow = true
+			return
 		}
 	case "/usr/bin/setsid":
 		return checkCmd(args[1])
@@ -163,20 +179,23 @@ func checkCmd(cmd string) bool {
 		for i := 1; i < len(args); i++ {
 			if args[i] != "-l" && args[i] != "-c" {
 				if script != "" {
-					return false
+					allow = false
+					return
 				}
 				script = args[i]
 			}
 		}
+		allow = true
 		cmds := parseCmd(script)
 		for _, cmd := range cmds {
-			if !checkCmd(cmd) {
-				return false
-			}
+			chCmdList, chCmdAllow := checkCmd(cmd)
+			cmdList = append(cmdList, chCmdList...)
+			allow = allow && chCmdAllow
 		}
-		return true
+		return
 	default:
-		return false
+		allow = false
+		return
 	}
 }
 
@@ -213,13 +232,21 @@ func main() {
 		return
 	}
 	// Temporarily release ssh&&scp
-	flag = true
-	if len(cmd) == 1 && checkCmd(cmd[0]) {
-		if flag {
-			setSelfPriority(-11)
-		}
-		syscall.Exec("/bin/bash", []string{"bash", "-c", sshOriginalCmd}, os.Environ())
+	if len(cmd) > 1 {
+		journal.Print(journal.PriNotice, "Incorrect cmd: %v\n", sshOriginalCmd)
 	} else {
-		journal.Print(journal.PriNotice, "Reject cmd: %v\n", sshOriginalCmd)
+		cmdList, allow := checkCmd(cmd[0])
+		if allow {
+			prio := -11
+			for _, cmd := range cmdList {
+				if cmd == "/usr/bin/x2goruncommand" {
+					prio = 0
+				}
+			}
+			setSelfPriority(prio)
+			syscall.Exec("/bin/bash", []string{"bash", "-c", sshOriginalCmd}, os.Environ())
+		} else {
+			journal.Print(journal.PriNotice, "Reject cmd: %v\n", sshOriginalCmd)
+		}
 	}
 }
