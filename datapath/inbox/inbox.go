@@ -29,6 +29,7 @@ var (
 	client        *http.Client
 	port          = "9990"
 	loPrivKey     ed25519.PrivateKey
+	retryTime     = 10
 )
 
 func loadCertsAndKeys() {
@@ -103,7 +104,6 @@ func sendFile(host string, fileHash string, fileBytes []byte) *http.Response {
 	host = host + "upload"
 	var buf bytes.Buffer
 	bufWriter := multipart.NewWriter(&buf)
-
 	part, err := bufWriter.CreateFormFile("file", fileHash)
 	if err != nil {
 		log.Printf("Generate request error: %v\n", err)
@@ -114,7 +114,8 @@ func sendFile(host string, fileHash string, fileBytes []byte) *http.Response {
 		log.Printf("Failed to write buf: %v", err)
 		return nil
 	}
-
+	signature := ed25519.Sign(loPrivKey, fileBytes)
+	bufWriter.WriteField("signature", hex.EncodeToString(signature))
 	bufWriter.Close()
 	req, _ := http.NewRequest("POST", host, &buf)
 	req.Header.Set("Content-Type", bufWriter.FormDataContentType())
@@ -136,6 +137,7 @@ func inbox(host string, filePaths []string) {
 		},
 	}
 	var sendFileList []appFile
+	filePathTmp := make(map[string]string)
 	for _, filePath := range filePaths {
 		basePath := filepath.Dir(strings.TrimSuffix(filePath, "/")) + "/"
 		filepath.Walk(filePath, func(path string, info fs.FileInfo, err error) error {
@@ -155,46 +157,44 @@ func inbox(host string, filePaths []string) {
 				return err
 			}
 			sendFileList = append(sendFileList, appFile{Hash: fileHash, RelPath: fileRelPath})
+			filePathTmp[fileHash] = path
 			return nil
 		})
 	}
-	res := sendApplication(host, sendFileList)
-	if res == nil {
-		return
-	}
-	var needFileList []string
-	tmpByte, err := io.ReadAll(res.Body)
-	if err != nil {
-		log.Printf("Failed to load response body: %v\n", err)
-		return
-	}
-	err = json.Unmarshal(tmpByte, &needFileList)
-	if err != nil {
-		log.Printf("Failed to unmarshal response body: %v\n", err)
-		return
-	}
-	for _, filePath := range filePaths {
-		filepath.Walk(filePath, func(path string, info fs.FileInfo, err error) error {
-			if !info.Mode().IsRegular() || err != nil {
-				return err
-			}
+	for range retryTime {
+		res := sendApplication(host, sendFileList)
+		if res == nil {
+			return
+		}
+		var needFileList []string
+		tmpByte, err := io.ReadAll(res.Body)
+		if err != nil {
+			log.Printf("Failed to load response body: %v\n", err)
+			return
+		}
+		err = json.Unmarshal(tmpByte, &needFileList)
+		if err != nil {
+			log.Printf("Failed to unmarshal response body: %v\n", err)
+			return
+		}
+		if len(needFileList) == 0 {
+			break
+		}
+		for _, needFile := range needFileList {
+			path := filePathTmp[needFile]
 			fileBytes, err := os.ReadFile(path)
 			if err != nil {
 				log.Printf("Failed to access %v: %v", path, err)
-				return err
 			}
 			fileHashBytes := sha256.Sum256(fileBytes)
 			fileHash := hex.EncodeToString(fileHashBytes[:])
-			res := sendFile(host, fileHash, fileBytes)
-			fmt.Println(res)
-			return nil
-		})
+			sendFile(host, fileHash, fileBytes)
+		}
 	}
 }
 
 func main() {
 	loadCertsAndKeys()
-	// inbox("106.15.236.65", []string{"./certs"})
 	var rootCmd = &cobra.Command{
 		Use:   "inbox <host> <file(s)>",
 		Short: "Send files to specified host",
