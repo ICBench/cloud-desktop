@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"log"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,9 +26,8 @@ import (
 var (
 	certFilePath  = "/usr/local/etc/inbox/certs"
 	certPool      = x509.NewCertPool()
-	loPrivKeyPath = "./certs/privKey"
+	loPrivKeyPath = "/usr/local/etc/inbox/certs/privKey"
 	client        *http.Client
-	port          = "9990"
 	loPrivKey     ed25519.PrivateKey
 	retryTime     = 10
 )
@@ -128,12 +128,17 @@ func sendFile(host string, fileHash string, fileBytes []byte) *http.Response {
 }
 
 func inbox(host string, filePaths []string) {
-	host = fmt.Sprintf("https://%v:%v/", host, port)
+	host = fmt.Sprintf("https://%v:9990/", host)
 	client = &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				RootCAs: certPool,
 			},
+			DialContext: (&net.Dialer{
+				LocalAddr: &net.TCPAddr{
+					Port: 9992,
+				},
+			}).DialContext,
 		},
 	}
 	var sendFileList []appFile
