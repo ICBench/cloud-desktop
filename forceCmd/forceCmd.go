@@ -215,6 +215,8 @@ func setSelfPriority(priority int) {
 	pid := os.Getpid()
 	cmd := exec.Command("sudo", "renice", "-n", strconv.Itoa(priority), "-p", strconv.Itoa(pid))
 	cmd.Run()
+	cmd = exec.Command("sudo", "taskset", "-acp", "0", strconv.Itoa(pid))
+	cmd.Run()
 }
 
 func main() {
