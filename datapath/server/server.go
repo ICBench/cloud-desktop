@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -23,14 +24,16 @@ import (
 )
 
 var (
-	crtFilePath  = "./server.crt"
-	keyFilePath  = "./server.key"
+	crtFilePath  = "/usr/local/etc/dataPathServer/server.crt"
+	keyFilePath  = "/usr/local/etc/dataPathServer/server.key"
 	pubKeys      = []ed25519.PublicKey{}
 	dbClient     *sql.DB
 	ossClient    *minio.Client
 	ossAccessKey = "yX61qRAWhaHcQPEXwYcQ"
 	ossSecretKey = "cUzNE7CuCy53DZMtMP667ahn2Nz7eDPdJoBcUQtQ"
 	ossEndpoint  = "127.0.0.1:9000"
+	vpcIdList    map[int]*net.IPNet
+	vpcNameList  map[string]int
 )
 
 type appFile struct {
@@ -92,6 +95,32 @@ func loadPubKeys() {
 	}
 }
 
+func loadVpcList() {
+	vpcIdList = make(map[int]*net.IPNet)
+	vpcNameList = make(map[string]int)
+	vpcRows, err := dbClient.Query("SELECT vpc_id,cidr,vpc_name FROM vpc")
+	if err != nil {
+		journal.Print(journal.PriErr, "Failed to load VPC list: %v\n", err)
+		os.Exit(-1)
+	}
+	for vpcRows.Next() {
+		var id int
+		var cidrStr string
+		var vpcName string
+		err := vpcRows.Scan(&id, &cidrStr, &vpcName)
+		if err != nil || id == 0 {
+			continue
+		}
+		_, cidr, err := net.ParseCIDR(cidrStr)
+		if err != nil {
+			journal.Print(journal.PriErr, "Failed to parse VPC %v CIDR: %v\n", id, err)
+			continue
+		}
+		vpcIdList[id] = cidr
+		vpcNameList[vpcName] = id
+	}
+}
+
 func checkFileExist(hash string) bool {
 	rows, err := dbClient.Query("SELECT hash FROM files WHERE hash = ?", hash)
 	if err != nil {
@@ -101,14 +130,14 @@ func checkFileExist(hash string) bool {
 	return rows.Next()
 }
 
-func createNewApplication(userKey ed25519.PublicKey, sendFileList []appFile, status int16) {
+func createNewApplication(userKey ed25519.PublicKey, srcVpcId int, dstVpcId int, sendFileList []appFile, status int16) {
 	pubKeyBytes, err := x509.MarshalPKIXPublicKey(userKey)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to marshal public key: %v", err)
 		return
 	}
 	user := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubKeyBytes}))
-	result, err := dbClient.Exec("INSERT INTO applications (owner,approval_status) VALUES (?,?)", user, status)
+	result, err := dbClient.Exec("INSERT INTO applications (owner,source_vpc_id,destination_vpc_id,approval_status) VALUES (?,?,?,?)", user, srcVpcId, dstVpcId, status)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to create new application: %v", err)
 		return
@@ -125,6 +154,14 @@ func createNewApplication(userKey ed25519.PublicKey, sendFileList []appFile, sta
 			return
 		}
 	}
+}
+
+func updateFileInfo(hash string) error {
+	_, err := dbClient.Exec("UPDATE files SET expiration_time=? WHERE hash=?", time.Now().AddDate(0, 30, 0), hash)
+	if err != nil {
+		journal.Print(journal.PriErr, "Update file database error: %v\n", err)
+	}
+	return err
 }
 
 func saveFile(fileBytes []byte, hash string) error {
@@ -160,14 +197,33 @@ func checkSign(dataBytes []byte, signature []byte) ed25519.PublicKey {
 	return nil
 }
 
-func isIntranet(addr string) bool {
-	return addr == ""
+func getVpcIdByIp(addrStr string) int {
+	ipStr, _, err := net.SplitHostPort(addrStr)
+	if err != nil {
+		return 0
+	}
+	addr := net.ParseIP(ipStr)
+	for id, vpc := range vpcIdList {
+		if vpc.Contains(addr) {
+			return id
+		}
+	}
+	return 0
+}
+
+func getVpcIdByName(vpcName string) (int, error) {
+	var err error = nil
+	id, exist := vpcNameList[vpcName]
+	if !exist {
+		id = 0
+		err = fmt.Errorf("VPC %v not found, choose outside", vpcName)
+	}
+	return id, err
 }
 
 func uploadServer() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/apply", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println(r.RemoteAddr)
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -177,6 +233,7 @@ func uploadServer() error {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		dstStr := r.PostFormValue("dstName")
 		jsonBytes := []byte(r.PostFormValue("jsondata"))
 		user := checkSign(jsonBytes, signature)
 		if user == nil {
@@ -193,16 +250,29 @@ func uploadServer() error {
 		for _, file := range sendFileList {
 			if !checkFileExist(file.Hash) {
 				needFileList = append(needFileList, file.Hash)
+			} else {
+				err := updateFileInfo(file.Hash)
+				if err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+					// w.Write([]byte(err.Error()))
+				}
 			}
 		}
 		if len(needFileList) == 0 {
-			var iniStat int16
-			if isIntranet(r.RemoteAddr) {
-				iniStat = 0
-			} else {
-				iniStat = 1
+			src := getVpcIdByIp(r.RemoteAddr)
+			dst, err := getVpcIdByName(dstStr)
+			if err != nil {
+				// w.Write([]byte(err.Error()))
 			}
-			createNewApplication(user, sendFileList, iniStat)
+			if dst == src {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			var iniStat int16 = 1
+			if src == 0 {
+				iniStat = 0
+			}
+			createNewApplication(user, src, dst, sendFileList, iniStat)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		returnBytes, _ := json.Marshal(needFileList)
@@ -243,10 +313,10 @@ func uploadServer() error {
 	return http.ListenAndServeTLS("0.0.0.0:9990", crtFilePath, keyFilePath, mux)
 }
 
-func downloadServer() {
+func downloadServer() error {
 	mux := http.NewServeMux()
 
-	http.ListenAndServeTLS("0.0.0.0:9991", crtFilePath, keyFilePath, mux)
+	return http.ListenAndServeTLS("0.0.0.0:9991", crtFilePath, keyFilePath, mux)
 }
 
 func fileTidy() {
@@ -285,6 +355,7 @@ func main() {
 	connectDb()
 	connectOss()
 	loadPubKeys()
+	loadVpcList()
 	go func() {
 		for {
 			err := uploadServer()
@@ -293,7 +364,14 @@ func main() {
 			}
 		}
 	}()
-	go downloadServer()
+	go func() {
+		for {
+			err := downloadServer()
+			if err != nil {
+				journal.Print(journal.PriErr, "Download server error: %v\n", err)
+			}
+		}
+	}()
 	for {
 		fileTidy()
 		time.Sleep(24 * time.Hour)

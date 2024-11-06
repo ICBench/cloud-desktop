@@ -26,7 +26,7 @@ import (
 var (
 	certFilePath  = "/usr/local/etc/inbox/certs"
 	certPool      = x509.NewCertPool()
-	loPrivKeyPath = "/usr/local/etc/inbox/certs/privKey"
+	loPrivKeyPath = "/usr/local/etc/inbox/privKey"
 	client        *http.Client
 	loPrivKey     ed25519.PrivateKey
 	retryTime     = 10
@@ -72,7 +72,7 @@ type appFile struct {
 	RelPath string
 }
 
-func sendApplication(host string, sendFileList []appFile) *http.Response {
+func sendApplication(host string, sendFileList []appFile, dst string) *http.Response {
 	host = host + "apply"
 	jsonData, err := json.Marshal(sendFileList)
 	if err != nil {
@@ -83,6 +83,7 @@ func sendApplication(host string, sendFileList []appFile) *http.Response {
 	var buf bytes.Buffer
 	bufWriter := multipart.NewWriter(&buf)
 	bufWriter.WriteField("signature", hex.EncodeToString(signature))
+	bufWriter.WriteField("dstName", dst)
 	jsonField, err := bufWriter.CreateFormField("jsondata")
 	if err != nil {
 		log.Printf("Generate request error: %v\n", err)
@@ -127,7 +128,7 @@ func sendFile(host string, fileHash string, fileBytes []byte) *http.Response {
 	return res
 }
 
-func inbox(host string, filePaths []string) {
+func inbox(host string, filePaths []string, dst string) {
 	host = fmt.Sprintf("https://%v:9990/", host)
 	client = &http.Client{
 		Transport: &http.Transport{
@@ -167,8 +168,12 @@ func inbox(host string, filePaths []string) {
 		})
 	}
 	for range retryTime {
-		res := sendApplication(host, sendFileList)
+		res := sendApplication(host, sendFileList, dst)
 		if res == nil {
+			return
+		}
+		if res.StatusCode != http.StatusOK {
+			log.Printf("Send application error, http %v\n", res.StatusCode)
 			return
 		}
 		var needFileList []string
@@ -193,12 +198,17 @@ func inbox(host string, filePaths []string) {
 			}
 			fileHashBytes := sha256.Sum256(fileBytes)
 			fileHash := hex.EncodeToString(fileHashBytes[:])
-			sendFile(host, fileHash, fileBytes)
+			res := sendFile(host, fileHash, fileBytes)
+			if res.StatusCode != http.StatusOK {
+				log.Printf("Send file error, http %v\n", res.StatusCode)
+				return
+			}
 		}
 	}
 }
 
 func main() {
+	var dst string
 	loadCertsAndKeys()
 	var rootCmd = &cobra.Command{
 		Use:   "inbox <host> <file(s)>",
@@ -208,9 +218,10 @@ func main() {
 			if len(args) < 2 {
 				return fmt.Errorf("need to specify host and file")
 			}
-			inbox(args[0], args[1:])
+			inbox(args[0], args[1:], dst)
 			return nil
 		},
 	}
+	rootCmd.Flags().StringVarP(&dst, "dst", "d", "", "Specify destination VPC")
 	rootCmd.Execute()
 }
