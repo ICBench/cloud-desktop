@@ -248,26 +248,26 @@ func main() {
 	} else {
 		cmdList, allow := checkCmd(cmd[0])
 		if allow {
+			cpuStr := "0"
 			prio := -11
 			for _, cmd := range cmdList {
 				if cmd == "/usr/bin/x2goruncommand" {
 					prio = 0
+					if cpuNum > 1 {
+						cpuStr = ""
+						for i := 1; i < cpuNum-1; i++ {
+							cpuStr = cpuStr + strconv.Itoa(i) + ","
+						}
+						cpuStr = cpuStr + strconv.Itoa(cpuNum-1)
+						setSelfCPU(cpuStr)
+					}
+					break
 				}
 			}
 			setSelfPriority(prio)
-			setSelfCPU("0")
+			setSelfCPU(cpuStr)
 			syscall.Exec("/bin/bash", []string{"bash", "-c", sshOriginalCmd}, os.Environ())
 		} else {
-			if cpuNum > 1 {
-				cpuStr := ""
-				for i := 1; i < cpuNum-1; i++ {
-					cpuStr = cpuStr + strconv.Itoa(i) + ","
-				}
-				cpuStr = cpuStr + strconv.Itoa(cpuNum-1)
-				setSelfCPU(cpuStr)
-			} else {
-				setSelfCPU("0")
-			}
 			journal.Print(journal.PriNotice, "Reject cmd: %v\n", sshOriginalCmd)
 		}
 	}
