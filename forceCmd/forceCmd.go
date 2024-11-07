@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -14,7 +15,10 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-var home string
+var (
+	home   string
+	cpuNum int
+)
 
 func checkCmd(cmd string) (cmdList []string, allow bool) {
 	allow = true
@@ -215,13 +219,18 @@ func setSelfPriority(priority int) {
 	pid := os.Getpid()
 	cmd := exec.Command("sudo", "renice", "-n", strconv.Itoa(priority), "-p", strconv.Itoa(pid))
 	cmd.Run()
-	cmd = exec.Command("sudo", "taskset", "-acp", "0", strconv.Itoa(pid))
+}
+
+func setSelfCPU(cpus string) {
+	pid := os.Getpid()
+	cmd := exec.Command("sudo", "taskset", "-acp", cpus, strconv.Itoa(pid))
 	cmd.Run()
 }
 
 func main() {
 	sshOriginalCmd := os.Getenv("SSH_ORIGINAL_COMMAND")
 	home = os.Getenv("HOME")
+	cpuNum = runtime.NumCPU()
 	cmd := parseCmd(sshOriginalCmd)
 	// Temporarily release ssh&&scp
 	if sshOriginalCmd == "" {
@@ -246,8 +255,19 @@ func main() {
 				}
 			}
 			setSelfPriority(prio)
+			setSelfCPU("0")
 			syscall.Exec("/bin/bash", []string{"bash", "-c", sshOriginalCmd}, os.Environ())
 		} else {
+			if cpuNum > 1 {
+				cpuStr := ""
+				for i := 1; i < cpuNum-1; i++ {
+					cpuStr = cpuStr + strconv.Itoa(i) + ","
+				}
+				cpuStr = cpuStr + strconv.Itoa(cpuNum-1)
+				setSelfCPU(cpuStr)
+			} else {
+				setSelfCPU("0")
+			}
 			journal.Print(journal.PriNotice, "Reject cmd: %v\n", sshOriginalCmd)
 		}
 	}
