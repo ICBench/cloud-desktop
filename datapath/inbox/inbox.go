@@ -172,37 +172,52 @@ func inbox(host string, filePaths []string, dst string) {
 		if res == nil {
 			return
 		}
-		if res.StatusCode != http.StatusOK {
-			log.Printf("Send application error, http %v\n", res.StatusCode)
-			return
-		}
-		var needFileList []string
-		tmpByte, err := io.ReadAll(res.Body)
-		if err != nil {
-			log.Printf("Failed to load response body: %v\n", err)
-			return
-		}
-		err = json.Unmarshal(tmpByte, &needFileList)
-		if err != nil {
-			log.Printf("Failed to unmarshal response body: %v\n", err)
-			return
-		}
-		if len(needFileList) == 0 {
-			break
-		}
-		for _, needFile := range needFileList {
-			path := filePathTmp[needFile]
-			fileBytes, err := os.ReadFile(path)
+		switch res.StatusCode {
+		case http.StatusPreconditionRequired:
+			var needFileList []string
+			tmpByte, err := io.ReadAll(res.Body)
 			if err != nil {
-				log.Printf("Failed to access %v: %v", path, err)
-			}
-			fileHashBytes := sha256.Sum256(fileBytes)
-			fileHash := hex.EncodeToString(fileHashBytes[:])
-			res := sendFile(host, fileHash, fileBytes)
-			if res.StatusCode != http.StatusOK {
-				log.Printf("Send file error, http %v\n", res.StatusCode)
+				log.Printf("Failed to load response body: %v\n", err)
 				return
 			}
+			err = json.Unmarshal(tmpByte, &needFileList)
+			if err != nil {
+				log.Printf("Failed to unmarshal response body: %v\n", err)
+				return
+			}
+			for _, needFile := range needFileList {
+				path := filePathTmp[needFile]
+				fileBytes, err := os.ReadFile(path)
+				if err != nil {
+					log.Printf("Failed to access %v: %v", path, err)
+				}
+				fileHashBytes := sha256.Sum256(fileBytes)
+				fileHash := hex.EncodeToString(fileHashBytes[:])
+				res := sendFile(host, fileHash, fileBytes)
+				if res.StatusCode != http.StatusOK {
+					var message string
+					messageBytes, err := io.ReadAll(res.Body)
+					if err != nil {
+						message = "Unknown error."
+					} else {
+						message = string(messageBytes)
+					}
+					log.Printf("Send file error, http %v: %v\n", res.StatusCode, message)
+				}
+			}
+		case http.StatusOK:
+			log.Println("Application sent succeed.")
+			return
+		default:
+			var message string
+			messageBytes, err := io.ReadAll(res.Body)
+			if err != nil {
+				message = "Unknown error."
+			} else {
+				message = string(messageBytes)
+			}
+			log.Printf("Send application error: %v\n", message)
+			return
 		}
 	}
 }

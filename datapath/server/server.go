@@ -73,6 +73,11 @@ func connectOss() {
 		journal.Print(journal.PriErr, "Failed to connect OSS: %v\n", err)
 		os.Exit(-1)
 	}
+	_, err = ossClient.ListBuckets(context.Background())
+	if err != nil {
+		journal.Print(journal.PriErr, "Failed to connect OSS: %v\n", err)
+		os.Exit(-1)
+	}
 }
 
 func loadPubKeys() {
@@ -101,7 +106,7 @@ func loadVpcList() {
 	vpcRows, err := dbClient.Query("SELECT vpc_id,cidr,vpc_name FROM vpc")
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to load VPC list: %v\n", err)
-		os.Exit(-1)
+		return
 	}
 	for vpcRows.Next() {
 		var id int
@@ -130,30 +135,31 @@ func checkFileExist(hash string) bool {
 	return rows.Next()
 }
 
-func createNewApplication(userKey ed25519.PublicKey, srcVpcId int, dstVpcId int, sendFileList []appFile, status int16) {
+func createNewApplication(userKey ed25519.PublicKey, srcVpcId int, dstVpcId int, sendFileList []appFile, status int16) error {
 	pubKeyBytes, err := x509.MarshalPKIXPublicKey(userKey)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to marshal public key: %v", err)
-		return
+		return err
 	}
 	user := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubKeyBytes}))
 	result, err := dbClient.Exec("INSERT INTO applications (owner,source_vpc_id,destination_vpc_id,approval_status) VALUES (?,?,?,?)", user, srcVpcId, dstVpcId, status)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to create new application: %v", err)
-		return
+		return err
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to get application id: %v", err)
-		return
+		return err
 	}
 	for _, sendFile := range sendFileList {
 		_, err := dbClient.Exec("INSERT INTO application_file (file_hash,application_id,file_info) VALUES (?,?,?)", sendFile.Hash, id, sendFile.RelPath)
 		if err != nil {
 			journal.Print(journal.PriErr, "Failed to create new application: %v", err)
-			return
+			return err
 		}
 	}
+	return nil
 }
 
 func updateFileInfo(hash string) error {
@@ -226,11 +232,13 @@ func uploadServer() error {
 	mux.HandleFunc("/apply", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			w.Write([]byte("Only post method allowed."))
 			return
 		}
 		signature, err := hex.DecodeString(r.PostFormValue("signature"))
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("Signature missing."))
 			return
 		}
 		dstStr := r.PostFormValue("dstName")
@@ -238,12 +246,14 @@ func uploadServer() error {
 		user := checkSign(jsonBytes, signature)
 		if user == nil {
 			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("Unknown user signature."))
 			return
 		}
 		var sendFileList []appFile
 		err = json.Unmarshal(jsonBytes, &sendFileList)
 		if err != nil {
 			w.WriteHeader(http.StatusMisdirectedRequest)
+			w.Write([]byte("Empty send file list."))
 			return
 		}
 		var needFileList []string
@@ -254,59 +264,75 @@ func uploadServer() error {
 				err := updateFileInfo(file.Hash)
 				if err != nil {
 					w.WriteHeader(http.StatusInternalServerError)
-					// w.Write([]byte(err.Error()))
+					w.Write([]byte("Updata file info failed."))
+					return
 				}
 			}
 		}
+		src := getVpcIdByIp(r.RemoteAddr)
+		dst, err := getVpcIdByName(dstStr)
+		if err != nil {
+			w.Header().Set("Warning", err.Error())
+		}
+		if dst == src {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("Same src and dst."))
+			return
+		}
 		if len(needFileList) == 0 {
-			src := getVpcIdByIp(r.RemoteAddr)
-			dst, err := getVpcIdByName(dstStr)
-			if err != nil {
-				// w.Write([]byte(err.Error()))
-			}
-			if dst == src {
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
 			var iniStat int16 = 1
 			if src == 0 {
 				iniStat = 0
 			}
-			createNewApplication(user, src, dst, sendFileList, iniStat)
+			err := createNewApplication(user, src, dst, sendFileList, iniStat)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte("Create application error."))
+			} else {
+				w.WriteHeader(http.StatusOK)
+			}
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			returnBytes, _ := json.Marshal(needFileList)
+			w.WriteHeader(http.StatusPreconditionRequired)
+			w.Write(returnBytes)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		returnBytes, _ := json.Marshal(needFileList)
-		w.Write(returnBytes)
 	})
 	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			w.Write([]byte("Only post method allowed."))
 			return
 		}
 		file, fileHeader, err := r.FormFile("file")
 		if err != nil {
 			w.WriteHeader(http.StatusMisdirectedRequest)
+			w.Write([]byte("Failed to load file in request."))
 			return
 		}
 		defer file.Close()
 		fileBytes, err := io.ReadAll(file)
 		if err != nil {
 			w.WriteHeader(http.StatusMisdirectedRequest)
+			w.Write([]byte("Failed to read file in request."))
 			return
 		}
 		signature, err := hex.DecodeString(r.PostFormValue("signature"))
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("Signature missing."))
 			return
 		}
 		user := checkSign(fileBytes, signature)
 		if user == nil {
 			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("Unknown user signature."))
 			return
 		}
 		err = saveFile(fileBytes, fileHeader.Filename)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Failed to save file."))
 			return
 		}
 	})
