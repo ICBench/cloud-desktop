@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/coreos/go-systemd/v22/journal"
@@ -34,11 +35,19 @@ var (
 	ossEndpoint  = "127.0.0.1:9000"
 	vpcIdList    map[int]*net.IPNet
 	vpcNameList  map[string]int
+	vpcList      map[int]string
 )
 
 type appFile struct {
 	Hash    string
 	RelPath string
+}
+
+type appRow struct {
+	Id       int
+	User     string
+	Status   int8
+	Src, Dst string
 }
 
 func connectDb() {
@@ -103,6 +112,7 @@ func loadPubKeys() {
 func loadVpcList() {
 	vpcIdList = make(map[int]*net.IPNet)
 	vpcNameList = make(map[string]int)
+	vpcList = make(map[int]string)
 	vpcRows, err := dbClient.Query("SELECT vpc_id,cidr,vpc_name FROM vpc")
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to load VPC list: %v\n", err)
@@ -113,7 +123,7 @@ func loadVpcList() {
 		var cidrStr string
 		var vpcName string
 		err := vpcRows.Scan(&id, &cidrStr, &vpcName)
-		if err != nil || id == 0 {
+		if err != nil {
 			continue
 		}
 		_, cidr, err := net.ParseCIDR(cidrStr)
@@ -123,6 +133,7 @@ func loadVpcList() {
 		}
 		vpcIdList[id] = cidr
 		vpcNameList[vpcName] = id
+		vpcList[id] = vpcName
 	}
 }
 
@@ -227,7 +238,31 @@ func getVpcIdByName(vpcName string) (int, error) {
 	return id, err
 }
 
-func uploadServer() error {
+func getUserInfoByKeyAndVpc(vpcId int, userKey ed25519.PublicKey) (userName string, permission int, err error) {
+	pubKeyBytes, err := x509.MarshalPKIXPublicKey(userKey)
+	if err != nil {
+		journal.Print(journal.PriErr, "Failed to marshal public key: %v", err)
+		userName = ""
+		permission = 0
+		return
+	}
+	user := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubKeyBytes}))
+	userRow := dbClient.QueryRow("SELECT user_name FROM users WHERE public_key = ?", user)
+	err = userRow.Scan(&userName)
+	if err != nil {
+		userName = ""
+		return
+	}
+	perRow := dbClient.QueryRow("SELECT permission FROM vpc_user WHERE user_key = ? AND vpc_id = ?", user, vpcId)
+	err = perRow.Scan(&permission)
+	if err != nil {
+		permission = -1
+	}
+	err = nil
+	return
+}
+
+func inboxServer() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/apply", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -243,8 +278,8 @@ func uploadServer() error {
 		}
 		dstStr := r.PostFormValue("dstName")
 		jsonBytes := []byte(r.PostFormValue("jsondata"))
-		user := checkSign(jsonBytes, signature)
-		if user == nil {
+		userKey := checkSign(jsonBytes, signature)
+		if userKey == nil {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("Unknown user signature."))
 			return
@@ -284,7 +319,7 @@ func uploadServer() error {
 			if src == 0 {
 				iniStat = 0
 			}
-			err := createNewApplication(user, src, dst, sendFileList, iniStat)
+			err := createNewApplication(userKey, src, dst, sendFileList, iniStat)
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				w.Write([]byte("Create application error."))
@@ -339,9 +374,78 @@ func uploadServer() error {
 	return http.ListenAndServeTLS("0.0.0.0:9990", crtFilePath, keyFilePath, mux)
 }
 
-func downloadServer() error {
+func outboxServer() error {
 	mux := http.NewServeMux()
-
+	mux.HandleFunc("/self", func(w http.ResponseWriter, r *http.Request) {
+		signature, _ := hex.DecodeString(r.PostFormValue("signature"))
+		rndBytes, _ := hex.DecodeString(r.PostFormValue("randdata"))
+		userKey := checkSign(rndBytes, signature)
+		if userKey == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("Unknown user signature."))
+			return
+		}
+		vpcId := getVpcIdByIp(r.RemoteAddr)
+		userName, permission, err := getUserInfoByKeyAndVpc(vpcId, userKey)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		info := make(map[string]interface{})
+		info["vpc"] = vpcList[vpcId]
+		info["username"] = userName
+		info["permission"] = strconv.Itoa(permission)
+		fmt.Println(vpcId, vpcList)
+		infoBytes, err := json.Marshal(info)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Write(infoBytes)
+	})
+	mux.HandleFunc("/applist", func(w http.ResponseWriter, r *http.Request) {
+		signature, _ := hex.DecodeString(r.PostFormValue("signature"))
+		rndBytes, _ := hex.DecodeString(r.PostFormValue("randdata"))
+		userKey := checkSign(rndBytes, signature)
+		if userKey == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("Unknown user signature."))
+			return
+		}
+		pubKeyBytes, err := x509.MarshalPKIXPublicKey(userKey)
+		if err != nil {
+			journal.Print(journal.PriErr, "Failed to marshal public key: %v", err)
+			return
+		}
+		user := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubKeyBytes}))
+		vpcId := getVpcIdByIp(r.RemoteAddr)
+		_, permission, err := getUserInfoByKeyAndVpc(vpcId, userKey)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		var appRows *sql.Rows
+		if permission == 1 {
+			appRows, err = dbClient.Query("select applications.id,users.user_name,applications.source_vpc_id,applications.destination_vpc_id,applications.approval_status from applications inner join users on applications.owner=users.public_key WHERE applications.source_vpc_id=?", vpcId)
+		} else {
+			appRows, err = dbClient.Query("select applications.id,users.user_name,applications.source_vpc_id,applications.destination_vpc_id,applications.approval_status from applications inner join users on applications.owner=users.public_key WHERE applications.owner=?", user)
+		}
+		if err != nil {
+			journal.Print(journal.PriErr, "Failed to query application info from database: %v\n", err)
+			return
+		}
+		var appList []appRow
+		for appRows.Next() {
+			var tmpApp appRow
+			var srcId, dstId int
+			appRows.Scan(&tmpApp.Id, &tmpApp.User, &srcId, &dstId, &tmpApp.Status)
+			tmpApp.Src = vpcList[srcId]
+			tmpApp.Dst = vpcList[dstId]
+			appList = append(appList, tmpApp)
+		}
+		appListBytes, _ := json.Marshal(appList)
+		w.Write(appListBytes)
+	})
 	return http.ListenAndServeTLS("0.0.0.0:9991", crtFilePath, keyFilePath, mux)
 }
 
@@ -384,7 +488,7 @@ func main() {
 	loadVpcList()
 	go func() {
 		for {
-			err := uploadServer()
+			err := inboxServer()
 			if err != nil {
 				journal.Print(journal.PriErr, "Upload server error: %v\n", err)
 			}
@@ -392,7 +496,7 @@ func main() {
 	}()
 	go func() {
 		for {
-			err := downloadServer()
+			err := outboxServer()
 			if err != nil {
 				journal.Print(journal.PriErr, "Download server error: %v\n", err)
 			}
