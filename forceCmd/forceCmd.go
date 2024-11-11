@@ -227,6 +227,15 @@ func setSelfCPU(cpus string) {
 	cmd.Run()
 }
 
+func hasCmd(cmdList []string, target string) bool {
+	for _, cmd := range cmdList {
+		if target == cmd {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
 	sshOriginalCmd := os.Getenv("SSH_ORIGINAL_COMMAND")
 	home = os.Getenv("HOME")
@@ -248,20 +257,22 @@ func main() {
 	} else {
 		cmdList, allow := checkCmd(cmd[0])
 		if allow {
-			cpuStr := "0"
-			prio := -11
-			for _, cmd := range cmdList {
-				if cmd == "/usr/bin/x2goruncommand" {
-					prio = 0
-					if cpuNum > 1 {
-						cpuStr = ""
-						for i := 1; i < cpuNum-1; i++ {
-							cpuStr = cpuStr + strconv.Itoa(i) + ","
-						}
-						cpuStr = cpuStr + strconv.Itoa(cpuNum-1)
+			var prio int
+			var cpuStr string
+			if hasCmd(cmdList, "/usr/bin/x2goruncommand") {
+				prio = 0
+				if cpuNum > 1 {
+					cpuStr = ""
+					for i := 1; i < cpuNum-1; i++ {
+						cpuStr = cpuStr + strconv.Itoa(i) + ","
 					}
-					break
+					cpuStr = cpuStr + strconv.Itoa(cpuNum-1)
+				} else {
+					cpuStr = "0"
 				}
+			} else {
+				cpuStr = "0"
+				prio = -11
 			}
 			setSelfPriority(prio)
 			setSelfCPU(cpuStr)
