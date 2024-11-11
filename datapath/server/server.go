@@ -12,10 +12,12 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -26,6 +28,8 @@ import (
 )
 
 var (
+	caPoolPath   = "/usr/local/etc/dataPathServer/CApool"
+	caPool       = x509.NewCertPool()
 	crtFilePath  = "/usr/local/etc/dataPathServer/server.crt"
 	keyFilePath  = "/usr/local/etc/dataPathServer/server.key"
 	pubKeys      = []ed25519.PublicKey{}
@@ -49,6 +53,25 @@ type appRow struct {
 	User     string
 	Status   int8
 	Src, Dst string
+}
+
+func loadCerts() {
+	filepath.Walk(caPoolPath, func(path string, info fs.FileInfo, err error) error {
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if err != nil {
+			log.Printf("Failed to access %v: %v\n", path, err)
+			return nil
+		}
+		certBytes, err := os.ReadFile(path)
+		if err != nil {
+			log.Printf("Failed to access %v: %v\n", path, err)
+			return nil
+		}
+		caPool.AppendCertsFromPEM(certBytes)
+		return nil
+	})
 }
 
 func connectDb() {
@@ -370,7 +393,15 @@ func inboxServer() error {
 			return
 		}
 	})
-	return http.ListenAndServeTLS("0.0.0.0:9990", crtFilePath, keyFilePath, mux)
+	server := &http.Server{
+		Addr: ":9990",
+		TLSConfig: &tls.Config{
+			ClientCAs:  caPool,
+			ClientAuth: tls.RequireAndVerifyClientCert,
+		},
+		Handler: mux,
+	}
+	return server.ListenAndServeTLS(crtFilePath, keyFilePath)
 }
 
 func parseReq(req *http.Request) (userKey ed25519.PublicKey, data map[string][]byte) {
@@ -520,7 +551,15 @@ func outboxServer() error {
 		fileBytes, _ := io.ReadAll(file)
 		writeRes(w, http.StatusOK, map[string][]byte{"file": fileBytes, "hash": []byte(fileHash)})
 	})
-	return http.ListenAndServeTLS("0.0.0.0:9991", crtFilePath, keyFilePath, mux)
+	server := &http.Server{
+		Addr: ":9991",
+		TLSConfig: &tls.Config{
+			ClientCAs:  caPool,
+			ClientAuth: tls.RequireAndVerifyClientCert,
+		},
+		Handler: mux,
+	}
+	return server.ListenAndServeTLS(crtFilePath, keyFilePath)
 }
 
 func fileTidy() {
@@ -556,6 +595,7 @@ func fileTidy() {
 }
 
 func main() {
+	loadCerts()
 	connectDb()
 	connectOss()
 	loadPubKeys()

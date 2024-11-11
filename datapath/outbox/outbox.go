@@ -26,15 +26,17 @@ import (
 
 var (
 	serverHost    = "106.15.236.65"
-	certFilePath  = "/usr/local/etc/outbox/certs"
-	certPool      = x509.NewCertPool()
+	caPoolPath    = "/usr/local/etc/dataPathClient/CApool"
+	caPool        = x509.NewCertPool()
+	crtFilePath   = "/usr/local/etc/dataPathClient/certs/client.crt"
+	keyFilePath   = "/usr/local/etc/dataPathClient/certs/client.key"
 	client        *http.Client
-	loPrivKeyPath = "/usr/local/etc/outbox/privKey"
+	loPrivKeyPath = "/usr/local/etc/dataPathClient/privKey"
 	loPrivKey     ed25519.PrivateKey
 )
 
 func loadCertsAndKeys() {
-	filepath.Walk(certFilePath, func(path string, info fs.FileInfo, err error) error {
+	filepath.Walk(caPoolPath, func(path string, info fs.FileInfo, err error) error {
 		if !info.Mode().IsRegular() {
 			return nil
 		}
@@ -47,7 +49,7 @@ func loadCertsAndKeys() {
 			log.Printf("Failed to access %v: %v\n", path, err)
 			return nil
 		}
-		certPool.AppendCertsFromPEM(certBytes)
+		caPool.AppendCertsFromPEM(certBytes)
 		return nil
 	})
 	loPrivKeyByte, err := os.ReadFile(loPrivKeyPath)
@@ -69,10 +71,15 @@ func loadCertsAndKeys() {
 }
 
 func loadHttpClient() {
+	cert, err := tls.LoadX509KeyPair(crtFilePath, keyFilePath)
+	if err != nil {
+		log.Println("Failed to load certs")
+	}
 	client = &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				RootCAs: certPool,
+				RootCAs:      caPool,
+				Certificates: []tls.Certificate{cert},
 			},
 			DialContext: (&net.Dialer{
 				LocalAddr: &net.TCPAddr{
