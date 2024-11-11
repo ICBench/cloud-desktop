@@ -259,7 +259,6 @@ func main() {
 							cpuStr = cpuStr + strconv.Itoa(i) + ","
 						}
 						cpuStr = cpuStr + strconv.Itoa(cpuNum-1)
-						setSelfCPU(cpuStr)
 					}
 					break
 				}
