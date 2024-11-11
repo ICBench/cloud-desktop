@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -147,12 +148,7 @@ func checkFileExist(hash string) bool {
 }
 
 func createNewApplication(userKey ed25519.PublicKey, srcVpcId int, dstVpcId int, sendFileList []appFile, status int16) error {
-	pubKeyBytes, err := x509.MarshalPKIXPublicKey(userKey)
-	if err != nil {
-		journal.Print(journal.PriErr, "Failed to marshal public key: %v", err)
-		return err
-	}
-	user := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubKeyBytes}))
+	user := parseUserFromKey(userKey)
 	result, err := dbClient.Exec("INSERT INTO applications (owner,source_vpc_id,destination_vpc_id,approval_status) VALUES (?,?,?,?)", user, srcVpcId, dstVpcId, status)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to create new application: %v", err)
@@ -238,15 +234,18 @@ func getVpcIdByName(vpcName string) (int, error) {
 	return id, err
 }
 
-func getUserInfoByKeyAndVpc(vpcId int, userKey ed25519.PublicKey) (userName string, permission int, err error) {
+func parseUserFromKey(userKey ed25519.PublicKey) (user string) {
 	pubKeyBytes, err := x509.MarshalPKIXPublicKey(userKey)
 	if err != nil {
-		journal.Print(journal.PriErr, "Failed to marshal public key: %v", err)
-		userName = ""
-		permission = 0
+		user = ""
 		return
 	}
-	user := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubKeyBytes}))
+	user = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubKeyBytes}))
+	return
+}
+
+func getUserInfoByKeyAndVpc(vpcId int, userKey ed25519.PublicKey) (userName string, permission int, err error) {
+	user := parseUserFromKey(userKey)
 	userRow := dbClient.QueryRow("SELECT user_name FROM users WHERE public_key = ?", user)
 	err = userRow.Scan(&userName)
 	if err != nil {
@@ -374,50 +373,60 @@ func inboxServer() error {
 	return http.ListenAndServeTLS("0.0.0.0:9990", crtFilePath, keyFilePath, mux)
 }
 
+func parseReq(req *http.Request) (userKey ed25519.PublicKey, data map[string][]byte) {
+	dataBytes, _ := hex.DecodeString(req.PostFormValue("data"))
+	signature, _ := hex.DecodeString(req.PostFormValue("signature"))
+	userKey = checkSign(dataBytes, signature)
+	jsonData := make(map[string]string)
+	data = make(map[string][]byte)
+	json.Unmarshal(dataBytes, &jsonData)
+	for fieldName, fieldValue := range jsonData {
+		data[fieldName], _ = hex.DecodeString(fieldValue)
+	}
+	return
+}
+
+func writeRes(res http.ResponseWriter, statusCode int, data map[string][]byte) {
+	jsonData := make(map[string]string)
+	for fieldName, fieldValue := range data {
+		jsonData[fieldName] = hex.EncodeToString(fieldValue)
+	}
+	jsonBytes, _ := json.Marshal(jsonData)
+	res.WriteHeader(statusCode)
+	res.Write(jsonBytes)
+}
+
 func outboxServer() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/self", func(w http.ResponseWriter, r *http.Request) {
-		signature, _ := hex.DecodeString(r.PostFormValue("signature"))
-		rndBytes, _ := hex.DecodeString(r.PostFormValue("randdata"))
-		userKey := checkSign(rndBytes, signature)
+		if r.Method != http.MethodPost {
+			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
+			return
+		}
+		userKey, _ := parseReq(r)
 		if userKey == nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Unknown user signature."))
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
 			return
 		}
 		vpcId := getVpcIdByIp(r.RemoteAddr)
 		userName, permission, err := getUserInfoByKeyAndVpc(vpcId, userKey)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
 			return
 		}
-		info := make(map[string]interface{})
-		info["vpc"] = vpcList[vpcId]
-		info["username"] = userName
-		info["permission"] = strconv.Itoa(permission)
-		fmt.Println(vpcId, vpcList)
-		infoBytes, err := json.Marshal(info)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.Write(infoBytes)
+		writeRes(w, http.StatusOK, map[string][]byte{
+			"vpc":        []byte(vpcList[vpcId]),
+			"username":   []byte(userName),
+			"permission": []byte(strconv.Itoa(permission)),
+		})
 	})
 	mux.HandleFunc("/applist", func(w http.ResponseWriter, r *http.Request) {
-		signature, _ := hex.DecodeString(r.PostFormValue("signature"))
-		rndBytes, _ := hex.DecodeString(r.PostFormValue("randdata"))
-		userKey := checkSign(rndBytes, signature)
-		if userKey == nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Unknown user signature."))
+		if r.Method != http.MethodPost {
+			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
 			return
 		}
-		pubKeyBytes, err := x509.MarshalPKIXPublicKey(userKey)
-		if err != nil {
-			journal.Print(journal.PriErr, "Failed to marshal public key: %v", err)
-			return
-		}
-		user := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubKeyBytes}))
+		userKey, _ := parseReq(r)
+		user := parseUserFromKey(userKey)
 		vpcId := getVpcIdByIp(r.RemoteAddr)
 		_, permission, err := getUserInfoByKeyAndVpc(vpcId, userKey)
 		if err != nil {
@@ -444,7 +453,72 @@ func outboxServer() error {
 			appList = append(appList, tmpApp)
 		}
 		appListBytes, _ := json.Marshal(appList)
-		w.Write(appListBytes)
+		writeRes(w, http.StatusOK, map[string][]byte{"applist": appListBytes})
+	})
+	mux.HandleFunc("/appinfo", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
+			return
+		}
+		userKey, data := parseReq(r)
+		idStr := string(data["id"])
+		id, _ := strconv.Atoi(idStr)
+		user := parseUserFromKey(userKey)
+		appRow := dbClient.QueryRow("SELECT owner,destination_vpc_id FROM applications WHERE id=?", id)
+		var owner string
+		var dst int
+		appRow.Scan(&owner, &dst)
+		if user != owner {
+			_, permission, _ := getUserInfoByKeyAndVpc(dst, userKey)
+			if permission != 0 { //check permission,need accomplish
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte("User have no permission."))
+				return
+			}
+		}
+		appFileRow, _ := dbClient.Query("SELECT file_info,file_hash FROM application_file WHERE application_id=?", id)
+		var appInfo []appFile
+		for appFileRow.Next() {
+			var tmpInfo appFile
+			appFileRow.Scan(&tmpInfo.RelPath, &tmpInfo.Hash)
+			appInfo = append(appInfo, tmpInfo)
+		}
+		appInfoBytes, _ := json.Marshal(appInfo)
+		writeRes(w, http.StatusOK, map[string][]byte{"appinfo": appInfoBytes})
+	})
+	mux.HandleFunc("/download", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
+			return
+		}
+		userKey, data := parseReq(r)
+		fileHash := string(data["hash"])
+		appId, _ := strconv.Atoi(string(data["appid"]))
+		user := parseUserFromKey(userKey)
+		appRow := dbClient.QueryRow("SELECT owner,destination_vpc_id FROM applications WHERE id=?", appId)
+		var owner string
+		var dst int
+		appRow.Scan(&owner, &dst)
+		if user != owner {
+			_, permission, _ := getUserInfoByKeyAndVpc(dst, userKey)
+			if permission != 0 { //check permission,need accomplish
+				writeRes(w, http.StatusForbidden, map[string][]byte{"error": []byte("User have no permission.")})
+				return
+			}
+		}
+		appFileRow, _ := dbClient.Query("SELECT * FROM application_file WHERE application_id=? AND file_hash=?", appId, fileHash)
+		if !appFileRow.Next() {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("File not belong to application")})
+			return
+		}
+		file, err := ossClient.GetObject(context.Background(), "files", fileHash, minio.GetObjectOptions{})
+		log.Println(err)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("File not found")})
+			return
+		}
+		fileBytes, _ := io.ReadAll(file)
+		writeRes(w, http.StatusOK, map[string][]byte{"file": fileBytes, "hash": []byte(fileHash)})
 	})
 	return http.ListenAndServeTLS("0.0.0.0:9991", crtFilePath, keyFilePath, mux)
 }

@@ -18,6 +18,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 
 	"github.com/spf13/cobra"
 )
@@ -81,43 +83,59 @@ func loadHttpClient() {
 	}
 }
 
-func writeAuth(bufWriter *multipart.Writer) {
-	rndData := make([]byte, 512)
-	rand.Read(rndData)
-	signature := ed25519.Sign(loPrivKey, rndData)
-	bufWriter.WriteField("signature", hex.EncodeToString(signature))
-	bufWriter.WriteField("randdata", hex.EncodeToString(rndData))
-}
-
-func queryUserInfo() map[string]interface{} {
-	host := fmt.Sprintf("https://%v:9991/self", serverHost)
+func sendReq(host string, data map[string][]byte) *http.Response {
 	var buf bytes.Buffer
 	bufWriter := multipart.NewWriter(&buf)
-	writeAuth(bufWriter)
+	jsonData := make(map[string]string)
+	for fieldName, fieldValue := range data {
+		jsonData[fieldName] = hex.EncodeToString(fieldValue)
+	}
+	saltData := make([]byte, 512)
+	rand.Read(saltData)
+	jsonData["salt"] = hex.EncodeToString(saltData)
+	jsonBytes, _ := json.Marshal(jsonData)
+	signature := ed25519.Sign(loPrivKey, jsonBytes)
+	bufWriter.WriteField("data", hex.EncodeToString(jsonBytes))
+	bufWriter.WriteField("signature", hex.EncodeToString(signature))
 	bufWriter.Close()
 	req, _ := http.NewRequest("POST", host, &buf)
 	req.Header.Set("Content-Type", bufWriter.FormDataContentType())
 	res, err := client.Do(req)
 	if err != nil {
-		log.Printf("Failed to ask self info: %v\n", err)
+		log.Printf("Failed to send request: %v\n", err)
 		os.Exit(-1)
 	}
+	return res
+}
+
+func parseRes(res *http.Response) (data map[string][]byte) {
+	data = map[string][]byte{}
+	jsonData := make(map[string]string)
+	jsonBytes, err := io.ReadAll(res.Body)
+	if err != nil {
+		log.Printf("Failed to parse response: %v\n", err)
+		os.Exit(-1)
+	}
+	json.Unmarshal(jsonBytes, &jsonData)
+	for fieldName, fieldValue := range jsonData {
+		data[fieldName], _ = hex.DecodeString(fieldValue)
+	}
+	return
+}
+
+func queryUserInfo() map[string]string {
+	host := fmt.Sprintf("https://%v:9991/self", serverHost)
+	res := sendReq(host, make(map[string][]byte))
 	if res.StatusCode != http.StatusOK {
-		log.Printf("Query failed http: %v\n", res.StatusCode)
+		log.Printf("Send request failed http: %v\n", res.StatusCode)
 		os.Exit(-1)
 	}
-	info := make(map[string]interface{})
-	infoBytes, err := io.ReadAll(res.Body)
-	if err != nil {
-		log.Printf("Incorrect response: %v\n", err)
-		os.Exit(-1)
+	data := parseRes(res)
+	return map[string]string{
+		"username":   string(data["username"]),
+		"permission": string(data["permission"]),
+		"vpc":        string(data["vpc"]),
 	}
-	err = json.Unmarshal(infoBytes, &info)
-	if err != nil {
-		log.Printf("Invalid response: %v\n", err)
-		os.Exit(-1)
-	}
-	return info
 }
 
 type appRow struct {
@@ -129,24 +147,94 @@ type appRow struct {
 
 func queryAppList() (appList []appRow) {
 	host := fmt.Sprintf("https://%v:9991/applist", serverHost)
-	var buf bytes.Buffer
-	bufWriter := multipart.NewWriter(&buf)
-	writeAuth(bufWriter)
-	bufWriter.Close()
-	req, _ := http.NewRequest("POST", host, &buf)
-	req.Header.Set("Content-Type", bufWriter.FormDataContentType())
-	res, err := client.Do(req)
-	if err != nil {
-		log.Printf("Failed to ask application list: %v\n", err)
+	res := sendReq(host, map[string][]byte{})
+	if res.StatusCode != http.StatusOK {
+		log.Printf("Send request failed http: %v\n", res.StatusCode)
 		os.Exit(-1)
 	}
+	data := parseRes(res)
+	json.Unmarshal(data["applist"], &appList)
+	return
+}
+
+type appFile struct {
+	Hash    string
+	RelPath string
+}
+
+func queryOneAppInfo(id int) (appInfo []appFile, err error) {
+	host := fmt.Sprintf("https://%v:9991/appinfo", serverHost)
+	fmt.Println(string([]byte(strconv.Itoa(id))))
+	res := sendReq(host, map[string][]byte{"id": []byte(strconv.Itoa(id))})
+	if res.StatusCode != http.StatusOK {
+		log.Printf("Send request failed http: %v\n", res.StatusCode)
+		return
+	}
+	data := parseRes(res)
+	json.Unmarshal(data["appinfo"], &appInfo)
+	sort.Slice(appInfo, func(i, j int) bool {
+		return appInfo[i].RelPath < appInfo[j].RelPath
+	})
+	return
+}
+
+func queryAppInfo(idList []int) (appInfo map[int][]appFile) {
+	appInfo = make(map[int][]appFile)
+	for _, id := range idList {
+		tmpInfo, err := queryOneAppInfo(id)
+		if err != nil {
+			log.Printf("Failed to get application %v info\n", id)
+			continue
+		}
+		appInfo[id] = tmpInfo
+	}
+	return
+}
+
+func downloadFile(fileHash string, appId string, file *os.File) {
+	host := fmt.Sprintf("https://%v:9991/download", serverHost)
+	var sendData = map[string][]byte{
+		"hash":  []byte(fileHash),
+		"appid": []byte(appId),
+	}
+	res := sendReq(host, sendData)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Query failed http: %v\n", res.StatusCode)
-		os.Exit(-1)
+		return
 	}
-	appListBytes, _ := io.ReadAll(res.Body)
-	json.Unmarshal(appListBytes, &appList)
-	return
+	recData := parseRes(res)
+	if string(recData["hash"]) == fileHash {
+		file.Write(recData["file"])
+	} else {
+		log.Printf("Unmatched file received")
+	}
+}
+
+func downloadFiles(idList []int, basePath string) {
+	appInfo := queryAppInfo(idList)
+	for id, app := range appInfo {
+		appSavePath := basePath + strconv.Itoa(id) + "/"
+		err := os.MkdirAll(appSavePath, 0755)
+		if err != nil {
+			log.Printf("Failed to access %v: %v", appSavePath, err)
+			os.Exit(-1)
+		}
+		for _, info := range app {
+			fileSavePath := appSavePath + info.RelPath
+			err := os.MkdirAll(filepath.Dir(fileSavePath), 0755)
+			if err != nil {
+				log.Printf("Failed to access %v: %v", fileSavePath, err)
+				os.Exit(-1)
+			}
+			file, err := os.Create(fileSavePath)
+			if err != nil {
+				log.Printf("Failed to access %v: %v", fileSavePath, err)
+				os.Exit(-1)
+			}
+			defer file.Close()
+			downloadFile(info.Hash, strconv.Itoa(id), file)
+		}
+	}
 }
 
 func startGUI() {
@@ -156,7 +244,6 @@ func startGUI() {
 func main() {
 	loadCertsAndKeys()
 	loadHttpClient()
-	queryAppList()
 	var jsonFlag bool
 	var rootCmd = &cobra.Command{
 		Use:   "outbox",
@@ -171,12 +258,12 @@ func main() {
 		Use:   "info",
 		Short: "Show user's info",
 		Run: func(cmd *cobra.Command, args []string) {
-			info := queryUserInfo()
+			data := queryUserInfo()
 			if jsonFlag {
-				jsonBytes, _ := json.Marshal(info)
+				jsonBytes, _ := json.Marshal(data)
 				fmt.Println(string(jsonBytes))
 			} else {
-				fmt.Printf("Username: %v\nPermissions: %v\nVPC: %v", info["username"], info["permission"], info["vpc"])
+				fmt.Printf("Username: %v\nPermissions: %v\nVPC: %v", data["username"], data["permission"], data["vpc"])
 			}
 		},
 	}
@@ -197,11 +284,67 @@ func main() {
 			}
 		},
 	}
-	var cmdDownload = &cobra.Command{}
+	var cmdViewApp = &cobra.Command{
+		Use:   "view",
+		Short: "Show application details",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) <= 0 {
+				return fmt.Errorf("should specify at least one application id")
+			}
+			for _, arg := range args {
+				if _, err := strconv.Atoi(arg); err != nil {
+					return fmt.Errorf("incorrect application id: %v", arg)
+				}
+			}
+			return nil
+		},
+		Run: func(cmd *cobra.Command, args []string) {
+			var idList []int
+			for _, arg := range args {
+				id, _ := strconv.Atoi(arg)
+				idList = append(idList, id)
+			}
+			appInfo := queryAppInfo(idList)
+			if jsonFlag {
+				jsonBytes, _ := json.Marshal(appInfo)
+				fmt.Println(string(jsonBytes))
+			} else {
+				for id, infos := range appInfo {
+					fmt.Printf("Application %v:\n", id)
+					for _, info := range infos {
+						fmt.Println(info.RelPath, info.Hash)
+					}
+				}
+			}
+		},
+	}
+	var saveFilePath string
+	var cmdDownload = &cobra.Command{
+		Use:   "download",
+		Short: "Download files in application from server",
+		Args: func(cmd *cobra.Command, args []string) error {
+			for _, arg := range args {
+				if _, err := strconv.Atoi(arg); err != nil {
+					return fmt.Errorf("incorrect application id: %v", arg)
+				}
+			}
+			return nil
+		},
+		Run: func(cmd *cobra.Command, args []string) {
+			var idList []int
+			for _, arg := range args {
+				id, _ := strconv.Atoi(arg)
+				idList = append(idList, id)
+			}
+			downloadFiles(idList, saveFilePath)
+		},
+	}
+	cmdDownload.Flags().StringVarP(&saveFilePath, "out", "o", "./", "Specify download directory.")
+	var cmdReviewApp = &cobra.Command{}
 	var completion = &cobra.Command{
 		Use: "completion",
 	}
 	completion.Hidden = true
-	rootCmd.AddCommand(cmdInfo, cmdList, cmdDownload, completion)
+	rootCmd.AddCommand(cmdInfo, cmdList, cmdViewApp, cmdDownload, cmdReviewApp, completion)
 	rootCmd.Execute()
 }
