@@ -3,5 +3,9 @@
 */build
 Makefile
 *.config
+/tool
 */tool
 *.tmp
+*/temp/
+*/temp
+/temp
