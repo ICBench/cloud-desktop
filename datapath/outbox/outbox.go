@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"datapath/utils"
 
+	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 )
 
@@ -83,7 +85,7 @@ func queryAppInfo(idList []int) (appInfo map[int][]utils.AppFile) {
 	return
 }
 
-func downloadFile(fileHash string, appId string, file *os.File) {
+func downloadFile(fileName string, fileHash string, appId string, file *os.File) {
 	host := fmt.Sprintf("https://%v:9991/download", serverHost)
 	var sendData = map[string][]byte{
 		"hash":  []byte(fileHash),
@@ -96,7 +98,14 @@ func downloadFile(fileHash string, appId string, file *os.File) {
 	}
 	recData := utils.ParseRes(res)
 	if string(recData["hash"]) == fileHash {
-		file.Write(recData["file"])
+		url := string(recData["url"])
+		res, err := client.Get(url)
+		if err != nil {
+			log.Printf("Failed to download file: %v\n", err)
+			return
+		}
+		bar := progressbar.DefaultBytes(res.ContentLength, fmt.Sprintf("Downloading %v:", fileName))
+		io.Copy(io.MultiWriter(file, bar), res.Body)
 	} else {
 		log.Printf("Unmatched file received")
 	}
@@ -124,7 +133,7 @@ func downloadFiles(idList []int, basePath string) {
 				os.Exit(-1)
 			}
 			defer file.Close()
-			downloadFile(info.Hash, strconv.Itoa(id), file)
+			downloadFile(info.RelPath, info.Hash, strconv.Itoa(id), file)
 		}
 	}
 }

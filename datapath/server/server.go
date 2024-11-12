@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
@@ -12,7 +11,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -29,19 +27,21 @@ import (
 )
 
 var (
-	caPoolPath   = "/usr/local/etc/dataPathServer/CApool"
-	caPool       = x509.NewCertPool()
-	crtFilePath  = "/usr/local/etc/dataPathServer/server.crt"
-	keyFilePath  = "/usr/local/etc/dataPathServer/server.key"
-	pubKeys      = []ed25519.PublicKey{}
-	dbClient     *sql.DB
-	ossClient    *minio.Client
-	ossAccessKey = "yX61qRAWhaHcQPEXwYcQ"
-	ossSecretKey = "cUzNE7CuCy53DZMtMP667ahn2Nz7eDPdJoBcUQtQ"
-	ossEndpoint  = "127.0.0.1:9000"
-	vpcIdList    map[int]*net.IPNet
-	vpcNameList  map[string]int
-	vpcList      map[int]string
+	caPoolPath     = "/usr/local/etc/dataPathServer/CApool"
+	caPool         = x509.NewCertPool()
+	crtFilePath    = "/usr/local/etc/dataPathServer/server.crt"
+	keyFilePath    = "/usr/local/etc/dataPathServer/server.key"
+	pubKeys        = []ed25519.PublicKey{}
+	dbClient       *sql.DB
+	ossClient      *minio.Client
+	outOssClient   *minio.Client
+	ossAccessKey   = "yX61qRAWhaHcQPEXwYcQ"
+	ossSecretKey   = "cUzNE7CuCy53DZMtMP667ahn2Nz7eDPdJoBcUQtQ"
+	ossEndpoint    = "127.0.0.1:9000"
+	outOssEndpoint = "106.15.236.65:9000"
+	vpcIdList      map[int]*net.IPNet
+	vpcNameList    map[string]int
+	vpcList        map[int]string
 )
 
 func loadCerts() {
@@ -96,6 +96,24 @@ func connectOss() {
 		os.Exit(-1)
 	}
 	_, err = ossClient.ListBuckets(context.Background())
+	if err != nil {
+		journal.Print(journal.PriErr, "Failed to connect OSS: %v\n", err)
+		os.Exit(-1)
+	}
+	outOssClient, err = minio.New(outOssEndpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(ossAccessKey, ossSecretKey, ""),
+		Secure: true,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs: certPool,
+			},
+		},
+	})
+	if err != nil {
+		journal.Print(journal.PriErr, "Failed to connect OSS: %v\n", err)
+		os.Exit(-1)
+	}
+	_, err = outOssClient.ListBuckets(context.Background())
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to connect OSS: %v\n", err)
 		os.Exit(-1)
@@ -156,7 +174,20 @@ func checkFileExist(hash string) bool {
 		journal.Print(journal.PriErr, "Failed to query file info from database: %v\n", err)
 		return false
 	}
-	return rows.Next()
+	if rows.Next() {
+		return true
+	} else {
+		_, err := ossClient.StatObject(context.Background(), "files", hash, minio.GetObjectOptions{})
+		if err != nil {
+			return false
+		}
+		expTime := time.Now().AddDate(0, 30, 0)
+		_, err = dbClient.Exec("INSERT INTO files (hash,expiration_time) VALUES (?,?)", hash, expTime)
+		if err != nil {
+			journal.Print(journal.PriErr, "Update file database error: %v\n", err)
+		}
+		return true
+	}
 }
 
 func hasReviewPer(permission int) bool {
@@ -197,20 +228,14 @@ func updateFileInfo(hash string) error {
 	return err
 }
 
-func saveFile(fileBytes []byte, hash string) error {
-	ctx := context.Background()
-	_, err := ossClient.PutObject(ctx, "files", hash, bytes.NewReader(fileBytes), int64(len(fileBytes)), minio.PutObjectOptions{})
-	if err != nil {
-		journal.Print(journal.PriErr, "Save file to oss error: %v\n", err)
-		return err
-	}
-	expTime := time.Now().AddDate(0, 30, 0)
-	_, err = dbClient.Exec("INSERT INTO files (hash,expiration_time) VALUES (?,?)", hash, expTime)
-	if err != nil {
-		journal.Print(journal.PriErr, "Update file database error: %v\n", err)
-		return err
-	}
-	return nil
+func getPreSignedUploadUrl(fileName string) (string, error) {
+	url, err := outOssClient.PresignedPutObject(context.Background(), "files", fileName, 1*time.Hour)
+	return url.String(), err
+}
+
+func getPreSignedDownloadUrl(fileName string) (string, error) {
+	url, err := outOssClient.PresignedGetObject(context.Background(), "files", fileName, 1*time.Hour, nil)
+	return url.String(), err
 }
 
 func delFile(hash string) {
@@ -328,10 +353,15 @@ func inboxServer() error {
 			writeRes(w, http.StatusMisdirectedRequest, map[string][]byte{"error": []byte("Empty send file list.")})
 			return
 		}
-		var needFileList []string
+		var needFileList []utils.UploadFile
 		for _, file := range sendFileList {
 			if !checkFileExist(file.Hash) {
-				needFileList = append(needFileList, file.Hash)
+				url, err := getPreSignedUploadUrl(file.Hash)
+				if err != nil {
+					writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to get presigned url")})
+					return
+				}
+				needFileList = append(needFileList, utils.UploadFile{Hash: file.Hash, Url: url})
 			} else {
 				err := updateFileInfo(file.Hash)
 				if err != nil {
@@ -366,22 +396,6 @@ func inboxServer() error {
 		} else {
 			returnBytes, _ := json.Marshal(needFileList)
 			writeRes(w, http.StatusPreconditionRequired, map[string][]byte{"needfile": returnBytes})
-			return
-		}
-	})
-	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
-			return
-		}
-		userKey, data := parseReq(r)
-		if userKey == nil {
-			writeRes(w, http.StatusBadRequest, map[string][]byte{"error:": []byte("Unknown user signature.")})
-			return
-		}
-		err := saveFile(data["file"], string(data["filehash"]))
-		if err != nil {
-			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to save file.")})
 			return
 		}
 	})
@@ -511,14 +525,12 @@ func outboxServer() error {
 			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("File not belong to application")})
 			return
 		}
-		file, err := ossClient.GetObject(context.Background(), "files", fileHash, minio.GetObjectOptions{})
-		log.Println(err)
+		url, err := getPreSignedDownloadUrl(fileHash)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("File not found")})
 			return
 		}
-		fileBytes, _ := io.ReadAll(file)
-		writeRes(w, http.StatusOK, map[string][]byte{"file": fileBytes, "hash": []byte(fileHash)})
+		writeRes(w, http.StatusOK, map[string][]byte{"url": []byte(url), "hash": []byte(fileHash)})
 	})
 	server := &http.Server{
 		Addr: ":9991",

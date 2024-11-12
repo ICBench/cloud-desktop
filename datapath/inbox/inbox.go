@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 )
 
@@ -39,15 +41,26 @@ func sendApplication(host string, sendFileList []utils.AppFile, dst string) *htt
 	return utils.SendReq(client, host, map[string][]byte{"sendfile": jsonData, "dstname": []byte(dst)}, &loPrivKey)
 }
 
-func sendFile(host string, fileHash string, fileBytes []byte) *http.Response {
-	host = host + "upload"
-	return utils.SendReq(client, host, map[string][]byte{"file": fileBytes, "filehash": []byte(fileHash)}, &loPrivKey)
+func sendFile(url string, file *os.File) *http.Response {
+	fileStat, _ := file.Stat()
+	fileSize := fileStat.Size()
+	bar := progressbar.DefaultBytes(fileSize, fmt.Sprintf("Uploading %v:", fileStat.Name()))
+	reqBody := io.TeeReader(file, bar)
+	req, _ := http.NewRequest("PUT", url, reqBody)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.ContentLength = fileSize
+	res, err := client.Do(req)
+	if err != nil {
+		log.Printf("Failed to upload file: %v", err)
+	}
+	return res
 }
 
 func inbox(host string, filePaths []string, dst string) {
 	host = fmt.Sprintf("https://%v:9990/", host)
 	var sendFileList []utils.AppFile
 	filePathTmp := make(map[string]string)
+	listSize := 0
 	for _, filePath := range filePaths {
 		basePath := filepath.Dir(strings.TrimSuffix(filePath, "/")) + "/"
 		filepath.Walk(filePath, func(path string, info fs.FileInfo, err error) error {
@@ -67,9 +80,14 @@ func inbox(host string, filePaths []string, dst string) {
 				return err
 			}
 			sendFileList = append(sendFileList, utils.AppFile{Hash: fileHash, RelPath: fileRelPath})
+			listSize += 32 + len(fileRelPath)
 			filePathTmp[fileHash] = path
 			return nil
 		})
+	}
+	if listSize > 1<<20 {
+		log.Println("Too many files, need to compress into a package")
+		os.Exit(-1)
 	}
 	for range retryTime {
 		res := sendApplication(host, sendFileList, dst)
@@ -79,24 +97,22 @@ func inbox(host string, filePaths []string, dst string) {
 		data := utils.ParseRes(res)
 		switch res.StatusCode {
 		case http.StatusPreconditionRequired:
-			var needFileList []string
+			var needFileList []utils.UploadFile
 			err := json.Unmarshal(data["needfile"], &needFileList)
 			if err != nil {
 				log.Printf("Failed to unmarshal response body: %v\n", err)
 				return
 			}
 			for _, needFile := range needFileList {
-				path := filePathTmp[needFile]
-				fileBytes, err := os.ReadFile(path)
+				path := filePathTmp[needFile.Hash]
+				file, err := os.Open(path)
 				if err != nil {
 					log.Printf("Failed to access %v: %v", path, err)
 				}
-				fileHashBytes := sha256.Sum256(fileBytes)
-				fileHash := hex.EncodeToString(fileHashBytes[:])
-				res := sendFile(host, fileHash, fileBytes)
+				defer file.Close()
+				res := sendFile(needFile.Url, file)
 				if res.StatusCode != http.StatusOK {
-					data := utils.ParseRes(res)
-					log.Printf("Send file error, http %v: %v\n", res.StatusCode, string(data["error"]))
+					log.Printf("Send file %v error, http %v\n", path, res.StatusCode)
 				}
 			}
 		case http.StatusOK:
@@ -118,7 +134,6 @@ func inbox(host string, filePaths []string, dst string) {
 func main() {
 	utils.LoadCertsAndKeys(caPoolPath, caPool, loPrivKeyPath, &loPrivKey)
 	utils.LoadHttpClient(crtFilePath, keyFilePath, client, caPool, 9992)
-	// inbox("106.15.236.65", []string{"./inbox"}, "vpc_test")
 	var dst string
 	var rootCmd = &cobra.Command{
 		Use:   "inbox <host> <file(s)>",
