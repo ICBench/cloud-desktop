@@ -1,20 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
+	"datapath/utils"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
-	"mime/multipart"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,132 +19,34 @@ import (
 )
 
 var (
-	crtFilePath   = "/usr/local/etc/dataPathClient/certs/client.crt"
-	keyFilePath   = "/usr/local/etc/dataPathClient/certs/client.key"
 	caPoolPath    = "/usr/local/etc/dataPathClient/CApool"
 	caPool        = x509.NewCertPool()
+	crtFilePath   = "/usr/local/etc/dataPathClient/certs/client.crt"
+	keyFilePath   = "/usr/local/etc/dataPathClient/certs/client.key"
 	loPrivKeyPath = "/usr/local/etc/dataPathClient/privKey"
-	client        *http.Client
-	loPrivKey     ed25519.PrivateKey
+	client        = &http.Client{}
+	loPrivKey     = ed25519.PrivateKey{}
 	retryTime     = 10
 )
 
-func loadCertsAndKeys() {
-	filepath.Walk(caPoolPath, func(path string, info fs.FileInfo, err error) error {
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		if err != nil {
-			log.Printf("Failed to access %v: %v\n", path, err)
-			return nil
-		}
-		certBytes, err := os.ReadFile(path)
-		if err != nil {
-			log.Printf("Failed to access %v: %v\n", path, err)
-			return nil
-		}
-		caPool.AppendCertsFromPEM(certBytes)
-		return nil
-	})
-	loPrivKeyByte, err := os.ReadFile(loPrivKeyPath)
-	if err != nil {
-		log.Printf("Failed to load private key %v: %v\n", loPrivKeyPath, err)
-		return
-	}
-	block, _ := pem.Decode(loPrivKeyByte)
-	if block == nil {
-		log.Printf("Private key file incorrect: %v\n", err)
-		return
-	}
-	tmpkey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		log.Printf("Failed to parse private key: %v\n", err)
-		return
-	}
-	loPrivKey = tmpkey.(ed25519.PrivateKey)
-}
-
-type appFile struct {
-	Hash    string
-	RelPath string
-}
-
-func sendApplication(host string, sendFileList []appFile, dst string) *http.Response {
+func sendApplication(host string, sendFileList []utils.AppFile, dst string) *http.Response {
 	host = host + "apply"
 	jsonData, err := json.Marshal(sendFileList)
 	if err != nil {
 		log.Printf("Marshal application failed: %v\n", err)
 		return nil
 	}
-	signature := ed25519.Sign(loPrivKey, jsonData)
-	var buf bytes.Buffer
-	bufWriter := multipart.NewWriter(&buf)
-	bufWriter.WriteField("signature", hex.EncodeToString(signature))
-	bufWriter.WriteField("dstName", dst)
-	jsonField, err := bufWriter.CreateFormField("jsondata")
-	if err != nil {
-		log.Printf("Generate request error: %v\n", err)
-		return nil
-	}
-	jsonField.Write(jsonData)
-	bufWriter.Close()
-	req, _ := http.NewRequest("POST", host, &buf)
-	req.Header.Set("Content-Type", bufWriter.FormDataContentType())
-	res, err := client.Do(req)
-	if err != nil {
-		log.Printf("Failed to send application: %v\n", err)
-		return nil
-	}
-	return res
+	return utils.SendReq(client, host, map[string][]byte{"sendfile": jsonData, "dstname": []byte(dst)}, &loPrivKey)
 }
 
 func sendFile(host string, fileHash string, fileBytes []byte) *http.Response {
 	host = host + "upload"
-	var buf bytes.Buffer
-	bufWriter := multipart.NewWriter(&buf)
-	part, err := bufWriter.CreateFormFile("file", fileHash)
-	if err != nil {
-		log.Printf("Generate request error: %v\n", err)
-		return nil
-	}
-	_, err = part.Write(fileBytes)
-	if err != nil {
-		log.Printf("Failed to write buf: %v", err)
-		return nil
-	}
-	signature := ed25519.Sign(loPrivKey, fileBytes)
-	bufWriter.WriteField("signature", hex.EncodeToString(signature))
-	bufWriter.Close()
-	req, _ := http.NewRequest("POST", host, &buf)
-	req.Header.Set("Content-Type", bufWriter.FormDataContentType())
-	res, err := client.Do(req)
-	if err != nil {
-		log.Printf("Failed to send application: %v\n", err)
-		return nil
-	}
-	return res
+	return utils.SendReq(client, host, map[string][]byte{"file": fileBytes, "filehash": []byte(fileHash)}, &loPrivKey)
 }
 
 func inbox(host string, filePaths []string, dst string) {
 	host = fmt.Sprintf("https://%v:9990/", host)
-	cert, err := tls.LoadX509KeyPair(crtFilePath, keyFilePath)
-	if err != nil {
-		log.Println("Failed to load certs")
-	}
-	client = &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:      caPool,
-				Certificates: []tls.Certificate{cert},
-			},
-			DialContext: (&net.Dialer{
-				LocalAddr: &net.TCPAddr{
-					Port: 9992,
-				},
-			}).DialContext,
-		},
-	}
-	var sendFileList []appFile
+	var sendFileList []utils.AppFile
 	filePathTmp := make(map[string]string)
 	for _, filePath := range filePaths {
 		basePath := filepath.Dir(strings.TrimSuffix(filePath, "/")) + "/"
@@ -169,7 +66,7 @@ func inbox(host string, filePaths []string, dst string) {
 				log.Printf("Failed to access %v: %v", path, err)
 				return err
 			}
-			sendFileList = append(sendFileList, appFile{Hash: fileHash, RelPath: fileRelPath})
+			sendFileList = append(sendFileList, utils.AppFile{Hash: fileHash, RelPath: fileRelPath})
 			filePathTmp[fileHash] = path
 			return nil
 		})
@@ -179,15 +76,11 @@ func inbox(host string, filePaths []string, dst string) {
 		if res == nil {
 			return
 		}
+		data := utils.ParseRes(res)
 		switch res.StatusCode {
 		case http.StatusPreconditionRequired:
 			var needFileList []string
-			tmpByte, err := io.ReadAll(res.Body)
-			if err != nil {
-				log.Printf("Failed to load response body: %v\n", err)
-				return
-			}
-			err = json.Unmarshal(tmpByte, &needFileList)
+			err := json.Unmarshal(data["needfile"], &needFileList)
 			if err != nil {
 				log.Printf("Failed to unmarshal response body: %v\n", err)
 				return
@@ -202,36 +95,31 @@ func inbox(host string, filePaths []string, dst string) {
 				fileHash := hex.EncodeToString(fileHashBytes[:])
 				res := sendFile(host, fileHash, fileBytes)
 				if res.StatusCode != http.StatusOK {
-					var message string
-					messageBytes, err := io.ReadAll(res.Body)
-					if err != nil {
-						message = "Unknown error."
-					} else {
-						message = string(messageBytes)
-					}
-					log.Printf("Send file error, http %v: %v\n", res.StatusCode, message)
+					data := utils.ParseRes(res)
+					log.Printf("Send file error, http %v: %v\n", res.StatusCode, string(data["error"]))
 				}
 			}
 		case http.StatusOK:
-			log.Println("Application sent succeed.")
+			warning := string(data["warning"])
+			if warning != "" {
+				log.Printf("Application sent succeed with warning: %v\n", warning)
+			} else {
+				log.Println("Application sent succeed.")
+			}
 			return
 		default:
-			var message string
-			messageBytes, err := io.ReadAll(res.Body)
-			if err != nil {
-				message = "Unknown error."
-			} else {
-				message = string(messageBytes)
-			}
-			log.Printf("Send application error: %v\n", message)
+			err := string(data["error"])
+			log.Printf("Send application error: %v\n", err)
 			return
 		}
 	}
 }
 
 func main() {
+	utils.LoadCertsAndKeys(caPoolPath, caPool, loPrivKeyPath, &loPrivKey)
+	utils.LoadHttpClient(crtFilePath, keyFilePath, client, caPool, 9992)
+	// inbox("106.15.236.65", []string{"./inbox"}, "vpc_test")
 	var dst string
-	loadCertsAndKeys()
 	var rootCmd = &cobra.Command{
 		Use:   "inbox <host> <file(s)>",
 		Short: "Send files to specified host",

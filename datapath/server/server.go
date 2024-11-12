@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
+	"datapath/utils"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -42,18 +43,6 @@ var (
 	vpcNameList  map[string]int
 	vpcList      map[int]string
 )
-
-type appFile struct {
-	Hash    string
-	RelPath string
-}
-
-type appRow struct {
-	Id       int
-	User     string
-	Status   int8
-	Src, Dst string
-}
 
 func loadCerts() {
 	filepath.Walk(caPoolPath, func(path string, info fs.FileInfo, err error) error {
@@ -170,7 +159,15 @@ func checkFileExist(hash string) bool {
 	return rows.Next()
 }
 
-func createNewApplication(userKey ed25519.PublicKey, srcVpcId int, dstVpcId int, sendFileList []appFile, status int16) error {
+func hasReviewPer(permission int) bool {
+	return permission == 1 || hasAdminPer(permission)
+}
+
+func hasAdminPer(permission int) bool {
+	return permission == 2
+}
+
+func createNewApplication(userKey ed25519.PublicKey, srcVpcId int, dstVpcId int, sendFileList []utils.AppFile, status int16) error {
 	user := parseUserFromKey(userKey)
 	result, err := dbClient.Exec("INSERT INTO applications (owner,source_vpc_id,destination_vpc_id,approval_status) VALUES (?,?,?,?)", user, srcVpcId, dstVpcId, status)
 	if err != nil {
@@ -284,130 +281,15 @@ func getUserInfoByKeyAndVpc(vpcId int, userKey ed25519.PublicKey) (userName stri
 	return
 }
 
-func inboxServer() error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/apply", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			w.Write([]byte("Only post method allowed."))
-			return
-		}
-		signature, err := hex.DecodeString(r.PostFormValue("signature"))
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Signature missing."))
-			return
-		}
-		dstStr := r.PostFormValue("dstName")
-		jsonBytes := []byte(r.PostFormValue("jsondata"))
-		userKey := checkSign(jsonBytes, signature)
-		if userKey == nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Unknown user signature."))
-			return
-		}
-		var sendFileList []appFile
-		err = json.Unmarshal(jsonBytes, &sendFileList)
-		if err != nil {
-			w.WriteHeader(http.StatusMisdirectedRequest)
-			w.Write([]byte("Empty send file list."))
-			return
-		}
-		var needFileList []string
-		for _, file := range sendFileList {
-			if !checkFileExist(file.Hash) {
-				needFileList = append(needFileList, file.Hash)
-			} else {
-				err := updateFileInfo(file.Hash)
-				if err != nil {
-					w.WriteHeader(http.StatusInternalServerError)
-					w.Write([]byte("Updata file info failed."))
-					return
-				}
-			}
-		}
-		src := getVpcIdByIp(r.RemoteAddr)
-		dst, err := getVpcIdByName(dstStr)
-		if err != nil {
-			w.Header().Set("Warning", err.Error())
-		}
-		if dst == src {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Same src and dst."))
-			return
-		}
-		if len(needFileList) == 0 {
-			var iniStat int16 = 1
-			if src == 0 {
-				iniStat = 0
-			}
-			err := createNewApplication(userKey, src, dst, sendFileList, iniStat)
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte("Create application error."))
-			} else {
-				w.WriteHeader(http.StatusOK)
-			}
-		} else {
-			w.Header().Set("Content-Type", "application/json")
-			returnBytes, _ := json.Marshal(needFileList)
-			w.WriteHeader(http.StatusPreconditionRequired)
-			w.Write(returnBytes)
-		}
-	})
-	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			w.Write([]byte("Only post method allowed."))
-			return
-		}
-		file, fileHeader, err := r.FormFile("file")
-		if err != nil {
-			w.WriteHeader(http.StatusMisdirectedRequest)
-			w.Write([]byte("Failed to load file in request."))
-			return
-		}
-		defer file.Close()
-		fileBytes, err := io.ReadAll(file)
-		if err != nil {
-			w.WriteHeader(http.StatusMisdirectedRequest)
-			w.Write([]byte("Failed to read file in request."))
-			return
-		}
-		signature, err := hex.DecodeString(r.PostFormValue("signature"))
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Signature missing."))
-			return
-		}
-		user := checkSign(fileBytes, signature)
-		if user == nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Unknown user signature."))
-			return
-		}
-		err = saveFile(fileBytes, fileHeader.Filename)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Failed to save file."))
-			return
-		}
-	})
-	server := &http.Server{
-		Addr: ":9990",
-		TLSConfig: &tls.Config{
-			ClientCAs:  caPool,
-			ClientAuth: tls.RequireAndVerifyClientCert,
-		},
-		Handler: mux,
-	}
-	return server.ListenAndServeTLS(crtFilePath, keyFilePath)
-}
-
 func parseReq(req *http.Request) (userKey ed25519.PublicKey, data map[string][]byte) {
+	req.ParseMultipartForm(2 << 30)
 	dataBytes, _ := hex.DecodeString(req.PostFormValue("data"))
 	signature, _ := hex.DecodeString(req.PostFormValue("signature"))
 	userKey = checkSign(dataBytes, signature)
+	if userKey == nil {
+		data = nil
+		return
+	}
 	jsonData := make(map[string]string)
 	data = make(map[string][]byte)
 	json.Unmarshal(dataBytes, &jsonData)
@@ -425,6 +307,93 @@ func writeRes(res http.ResponseWriter, statusCode int, data map[string][]byte) {
 	jsonBytes, _ := json.Marshal(jsonData)
 	res.WriteHeader(statusCode)
 	res.Write(jsonBytes)
+}
+
+func inboxServer() error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/apply", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
+			return
+		}
+		userKey, data := parseReq(r)
+		if userKey == nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
+			return
+		}
+		dstStr := string(data["dstname"])
+		var sendFileList []utils.AppFile
+		err := json.Unmarshal(data["sendfile"], &sendFileList)
+		if err != nil {
+			writeRes(w, http.StatusMisdirectedRequest, map[string][]byte{"error": []byte("Empty send file list.")})
+			return
+		}
+		var needFileList []string
+		for _, file := range sendFileList {
+			if !checkFileExist(file.Hash) {
+				needFileList = append(needFileList, file.Hash)
+			} else {
+				err := updateFileInfo(file.Hash)
+				if err != nil {
+					writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Updata file info failed.")})
+					return
+				}
+			}
+		}
+		src := getVpcIdByIp(r.RemoteAddr)
+		dst, err := getVpcIdByName(dstStr)
+		var warning string = ""
+		if err != nil {
+			warning = err.Error()
+		}
+		if dst == src {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Same src and dst.")})
+			return
+		}
+		if len(needFileList) == 0 {
+			var iniStat int16 = 1
+			if src == 0 {
+				iniStat = 0
+			}
+			err := createNewApplication(userKey, src, dst, sendFileList, iniStat)
+			if err != nil {
+				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Create application error.")})
+				return
+			} else {
+				writeRes(w, http.StatusOK, map[string][]byte{"warning": []byte(warning)})
+				return
+			}
+		} else {
+			returnBytes, _ := json.Marshal(needFileList)
+			writeRes(w, http.StatusPreconditionRequired, map[string][]byte{"needfile": returnBytes})
+			return
+		}
+	})
+	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
+			return
+		}
+		userKey, data := parseReq(r)
+		if userKey == nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error:": []byte("Unknown user signature.")})
+			return
+		}
+		err := saveFile(data["file"], string(data["filehash"]))
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to save file.")})
+			return
+		}
+	})
+	server := &http.Server{
+		Addr: ":9990",
+		TLSConfig: &tls.Config{
+			ClientCAs:  caPool,
+			ClientAuth: tls.RequireAndVerifyClientCert,
+		},
+		Handler: mux,
+	}
+	return server.ListenAndServeTLS(crtFilePath, keyFilePath)
 }
 
 func outboxServer() error {
@@ -465,7 +434,7 @@ func outboxServer() error {
 			return
 		}
 		var appRows *sql.Rows
-		if permission == 1 {
+		if hasReviewPer(permission) {
 			appRows, err = dbClient.Query("select applications.id,users.user_name,applications.source_vpc_id,applications.destination_vpc_id,applications.approval_status from applications inner join users on applications.owner=users.public_key WHERE applications.source_vpc_id=?", vpcId)
 		} else {
 			appRows, err = dbClient.Query("select applications.id,users.user_name,applications.source_vpc_id,applications.destination_vpc_id,applications.approval_status from applications inner join users on applications.owner=users.public_key WHERE applications.owner=?", user)
@@ -474,9 +443,9 @@ func outboxServer() error {
 			journal.Print(journal.PriErr, "Failed to query application info from database: %v\n", err)
 			return
 		}
-		var appList []appRow
+		var appList []utils.AppInfo
 		for appRows.Next() {
-			var tmpApp appRow
+			var tmpApp utils.AppInfo
 			var srcId, dstId int
 			appRows.Scan(&tmpApp.Id, &tmpApp.User, &srcId, &dstId, &tmpApp.Status)
 			tmpApp.Src = vpcList[srcId]
@@ -495,22 +464,22 @@ func outboxServer() error {
 		idStr := string(data["id"])
 		id, _ := strconv.Atoi(idStr)
 		user := parseUserFromKey(userKey)
-		appRow := dbClient.QueryRow("SELECT owner,destination_vpc_id FROM applications WHERE id=?", id)
+		appRows := dbClient.QueryRow("SELECT owner,destination_vpc_id FROM applications WHERE id=?", id)
 		var owner string
 		var dst int
-		appRow.Scan(&owner, &dst)
+		appRows.Scan(&owner, &dst)
 		if user != owner {
 			_, permission, _ := getUserInfoByKeyAndVpc(dst, userKey)
-			if permission != 0 { //check permission,need accomplish
+			if !hasReviewPer(permission) {
 				w.WriteHeader(http.StatusForbidden)
 				w.Write([]byte("User have no permission."))
 				return
 			}
 		}
 		appFileRow, _ := dbClient.Query("SELECT file_info,file_hash FROM application_file WHERE application_id=?", id)
-		var appInfo []appFile
+		var appInfo []utils.AppFile
 		for appFileRow.Next() {
-			var tmpInfo appFile
+			var tmpInfo utils.AppFile
 			appFileRow.Scan(&tmpInfo.RelPath, &tmpInfo.Hash)
 			appInfo = append(appInfo, tmpInfo)
 		}
@@ -526,13 +495,13 @@ func outboxServer() error {
 		fileHash := string(data["hash"])
 		appId, _ := strconv.Atoi(string(data["appid"]))
 		user := parseUserFromKey(userKey)
-		appRow := dbClient.QueryRow("SELECT owner,destination_vpc_id FROM applications WHERE id=?", appId)
+		appRows := dbClient.QueryRow("SELECT owner,destination_vpc_id FROM applications WHERE id=?", appId)
 		var owner string
 		var dst int
-		appRow.Scan(&owner, &dst)
+		appRows.Scan(&owner, &dst)
 		if user != owner {
 			_, permission, _ := getUserInfoByKeyAndVpc(dst, userKey)
-			if permission != 0 { //check permission,need accomplish
+			if !hasReviewPer(permission) {
 				writeRes(w, http.StatusForbidden, map[string][]byte{"error": []byte("User have no permission.")})
 				return
 			}

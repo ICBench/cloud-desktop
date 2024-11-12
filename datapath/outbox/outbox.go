@@ -1,25 +1,18 @@
 package main
 
 import (
-	"bytes"
 	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
-	"io"
-	"io/fs"
 	"log"
-	"mime/multipart"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+
+	"datapath/utils"
 
 	"github.com/spf13/cobra"
 )
@@ -30,114 +23,19 @@ var (
 	caPool        = x509.NewCertPool()
 	crtFilePath   = "/usr/local/etc/dataPathClient/certs/client.crt"
 	keyFilePath   = "/usr/local/etc/dataPathClient/certs/client.key"
-	client        *http.Client
+	client        = &http.Client{}
 	loPrivKeyPath = "/usr/local/etc/dataPathClient/privKey"
-	loPrivKey     ed25519.PrivateKey
+	loPrivKey     = ed25519.PrivateKey{}
 )
-
-func loadCertsAndKeys() {
-	filepath.Walk(caPoolPath, func(path string, info fs.FileInfo, err error) error {
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		if err != nil {
-			log.Printf("Failed to access %v: %v\n", path, err)
-			return nil
-		}
-		certBytes, err := os.ReadFile(path)
-		if err != nil {
-			log.Printf("Failed to access %v: %v\n", path, err)
-			return nil
-		}
-		caPool.AppendCertsFromPEM(certBytes)
-		return nil
-	})
-	loPrivKeyByte, err := os.ReadFile(loPrivKeyPath)
-	if err != nil {
-		log.Printf("Failed to load private key %v: %v\n", loPrivKeyPath, err)
-		return
-	}
-	block, _ := pem.Decode(loPrivKeyByte)
-	if block == nil {
-		log.Printf("Private key file incorrect: %v\n", err)
-		return
-	}
-	tmpkey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		log.Printf("Failed to parse private key: %v\n", err)
-		return
-	}
-	loPrivKey = tmpkey.(ed25519.PrivateKey)
-}
-
-func loadHttpClient() {
-	cert, err := tls.LoadX509KeyPair(crtFilePath, keyFilePath)
-	if err != nil {
-		log.Println("Failed to load certs")
-	}
-	client = &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:      caPool,
-				Certificates: []tls.Certificate{cert},
-			},
-			DialContext: (&net.Dialer{
-				LocalAddr: &net.TCPAddr{
-					Port: 9993,
-				},
-			}).DialContext,
-		},
-	}
-}
-
-func sendReq(host string, data map[string][]byte) *http.Response {
-	var buf bytes.Buffer
-	bufWriter := multipart.NewWriter(&buf)
-	jsonData := make(map[string]string)
-	for fieldName, fieldValue := range data {
-		jsonData[fieldName] = hex.EncodeToString(fieldValue)
-	}
-	saltData := make([]byte, 512)
-	rand.Read(saltData)
-	jsonData["salt"] = hex.EncodeToString(saltData)
-	jsonBytes, _ := json.Marshal(jsonData)
-	signature := ed25519.Sign(loPrivKey, jsonBytes)
-	bufWriter.WriteField("data", hex.EncodeToString(jsonBytes))
-	bufWriter.WriteField("signature", hex.EncodeToString(signature))
-	bufWriter.Close()
-	req, _ := http.NewRequest("POST", host, &buf)
-	req.Header.Set("Content-Type", bufWriter.FormDataContentType())
-	res, err := client.Do(req)
-	if err != nil {
-		log.Printf("Failed to send request: %v\n", err)
-		os.Exit(-1)
-	}
-	return res
-}
-
-func parseRes(res *http.Response) (data map[string][]byte) {
-	data = map[string][]byte{}
-	jsonData := make(map[string]string)
-	jsonBytes, err := io.ReadAll(res.Body)
-	if err != nil {
-		log.Printf("Failed to parse response: %v\n", err)
-		os.Exit(-1)
-	}
-	json.Unmarshal(jsonBytes, &jsonData)
-	for fieldName, fieldValue := range jsonData {
-		data[fieldName], _ = hex.DecodeString(fieldValue)
-	}
-	return
-}
 
 func queryUserInfo() map[string]string {
 	host := fmt.Sprintf("https://%v:9991/self", serverHost)
-	res := sendReq(host, make(map[string][]byte))
+	res := utils.SendReq(client, host, make(map[string][]byte), &loPrivKey)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Send request failed http: %v\n", res.StatusCode)
 		os.Exit(-1)
 	}
-	data := parseRes(res)
+	data := utils.ParseRes(res)
 	return map[string]string{
 		"username":   string(data["username"]),
 		"permission": string(data["permission"]),
@@ -145,39 +43,26 @@ func queryUserInfo() map[string]string {
 	}
 }
 
-type appRow struct {
-	Id       int
-	User     string
-	Status   int8
-	Src, Dst string
-}
-
-func queryAppList() (appList []appRow) {
+func queryAppList() (appList []utils.AppInfo) {
 	host := fmt.Sprintf("https://%v:9991/applist", serverHost)
-	res := sendReq(host, map[string][]byte{})
+	res := utils.SendReq(client, host, map[string][]byte{}, &loPrivKey)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Send request failed http: %v\n", res.StatusCode)
 		os.Exit(-1)
 	}
-	data := parseRes(res)
+	data := utils.ParseRes(res)
 	json.Unmarshal(data["applist"], &appList)
 	return
 }
 
-type appFile struct {
-	Hash    string
-	RelPath string
-}
-
-func queryOneAppInfo(id int) (appInfo []appFile, err error) {
+func queryOneAppInfo(id int) (appInfo []utils.AppFile, err error) {
 	host := fmt.Sprintf("https://%v:9991/appinfo", serverHost)
-	fmt.Println(string([]byte(strconv.Itoa(id))))
-	res := sendReq(host, map[string][]byte{"id": []byte(strconv.Itoa(id))})
+	res := utils.SendReq(client, host, map[string][]byte{"id": []byte(strconv.Itoa(id))}, &loPrivKey)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Send request failed http: %v\n", res.StatusCode)
 		return
 	}
-	data := parseRes(res)
+	data := utils.ParseRes(res)
 	json.Unmarshal(data["appinfo"], &appInfo)
 	sort.Slice(appInfo, func(i, j int) bool {
 		return appInfo[i].RelPath < appInfo[j].RelPath
@@ -185,8 +70,8 @@ func queryOneAppInfo(id int) (appInfo []appFile, err error) {
 	return
 }
 
-func queryAppInfo(idList []int) (appInfo map[int][]appFile) {
-	appInfo = make(map[int][]appFile)
+func queryAppInfo(idList []int) (appInfo map[int][]utils.AppFile) {
+	appInfo = make(map[int][]utils.AppFile)
 	for _, id := range idList {
 		tmpInfo, err := queryOneAppInfo(id)
 		if err != nil {
@@ -204,12 +89,12 @@ func downloadFile(fileHash string, appId string, file *os.File) {
 		"hash":  []byte(fileHash),
 		"appid": []byte(appId),
 	}
-	res := sendReq(host, sendData)
+	res := utils.SendReq(client, host, sendData, &loPrivKey)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Query failed http: %v\n", res.StatusCode)
 		return
 	}
-	recData := parseRes(res)
+	recData := utils.ParseRes(res)
 	if string(recData["hash"]) == fileHash {
 		file.Write(recData["file"])
 	} else {
@@ -249,8 +134,8 @@ func startGUI() {
 }
 
 func main() {
-	loadCertsAndKeys()
-	loadHttpClient()
+	utils.LoadCertsAndKeys(caPoolPath, caPool, loPrivKeyPath, &loPrivKey)
+	utils.LoadHttpClient(crtFilePath, keyFilePath, client, caPool, 9993)
 	var jsonFlag bool
 	var rootCmd = &cobra.Command{
 		Use:   "outbox",
@@ -316,9 +201,9 @@ func main() {
 				jsonBytes, _ := json.Marshal(appInfo)
 				fmt.Println(string(jsonBytes))
 			} else {
-				for id, infos := range appInfo {
+				for _, id := range idList {
 					fmt.Printf("Application %v:\n", id)
-					for _, info := range infos {
+					for _, info := range appInfo[id] {
 						fmt.Println(info.RelPath, info.Hash)
 					}
 				}
