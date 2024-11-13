@@ -92,13 +92,13 @@ func downloadFile(fileName string, fileHash string, appId string, file *os.File)
 		"appid": []byte(appId),
 	}
 	res := utils.SendReq(client, host, sendData, &loPrivKey)
+	data := utils.ParseRes(res)
 	if res.StatusCode != http.StatusOK {
-		log.Printf("Query failed http: %v\n", res.StatusCode)
+		log.Printf("Query failed http: %v %v\n", res.StatusCode, string(data["error"]))
 		return
 	}
-	recData := utils.ParseRes(res)
-	if string(recData["hash"]) == fileHash {
-		url := string(recData["url"])
+	if string(data["hash"]) == fileHash {
+		url := string(data["url"])
 		res, err := client.Get(url)
 		if err != nil {
 			log.Printf("Failed to download file: %v\n", err)
@@ -136,6 +136,20 @@ func downloadFiles(idList []int, basePath string) {
 			downloadFile(info.RelPath, info.Hash, strconv.Itoa(id), file)
 		}
 	}
+}
+
+func reviewApp(appIdList []string, status string) map[string]string {
+	host := fmt.Sprintf("https://%v:9991/review", serverHost)
+	appIdListBytes, _ := json.Marshal(appIdList)
+	res := utils.SendReq(client, host, map[string][]byte{"appidlist": appIdListBytes, "status": []byte(status)}, &loPrivKey)
+	data := utils.ParseRes(res)
+	if res.StatusCode != http.StatusOK {
+		log.Printf("http %v: %v", res.StatusCode, string(data["error"]))
+		os.Exit(-1)
+	}
+	reviewStat := make(map[string]string)
+	json.Unmarshal(data["reviewstat"], &reviewStat)
+	return reviewStat
 }
 
 func startGUI() {
@@ -241,7 +255,38 @@ func main() {
 		},
 	}
 	cmdDownload.Flags().StringVarP(&saveFilePath, "out", "o", "./", "Specify download directory.")
-	var cmdReviewApp = &cobra.Command{}
+	var cancelFlag bool
+	var cmdReviewApp = &cobra.Command{
+		Use:   "review",
+		Short: "Review an application",
+		Long:  "Review an application, will not take effect without permission",
+		Args: func(cmd *cobra.Command, args []string) error {
+			for _, arg := range args {
+				if _, err := strconv.Atoi(arg); err != nil {
+					return fmt.Errorf("incorrect application id: %v", arg)
+				}
+			}
+			return nil
+		},
+		Run: func(cmd *cobra.Command, args []string) {
+			var status string
+			if cancelFlag {
+				status = "1"
+			} else {
+				status = "0"
+			}
+			reviewStat := reviewApp(args, status)
+			if jsonFlag {
+				jsonBytes, _ := json.Marshal(reviewStat)
+				fmt.Println(string(jsonBytes))
+			} else {
+				for _, id := range args {
+					fmt.Printf("Appilcation %v review status: %v\n", id, reviewStat[id])
+				}
+			}
+		},
+	}
+	cmdReviewApp.Flags().BoolVarP(&cancelFlag, "cancel", "c", false, "Cancel the passed application if specified this flag")
 	var completion = &cobra.Command{
 		Use: "completion",
 	}

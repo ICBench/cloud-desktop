@@ -191,14 +191,18 @@ func checkFileExist(hash string) bool {
 }
 
 func hasReviewPer(permission int) bool {
-	return permission == 1 || hasAdminPer(permission)
+	return permission&utils.PerReview != 0 || hasAdminPer(permission)
 }
 
 func hasAdminPer(permission int) bool {
-	return permission == 2
+	return permission&utils.PerAdmin != 0
 }
 
-func createNewApplication(userKey ed25519.PublicKey, srcVpcId int, dstVpcId int, sendFileList []utils.AppFile, status int16) error {
+func isAppStatAllow(status int) bool {
+	return status == 0
+}
+
+func createNewApplication(userKey ed25519.PublicKey, srcVpcId int, dstVpcId int, sendFileList []utils.AppFile, status int) error {
 	user := parseUserFromKey(userKey)
 	result, err := dbClient.Exec("INSERT INTO applications (owner,source_vpc_id,destination_vpc_id,approval_status) VALUES (?,?,?,?)", user, srcVpcId, dstVpcId, status)
 	if err != nil {
@@ -300,10 +304,34 @@ func getUserInfoByKeyAndVpc(vpcId int, userKey ed25519.PublicKey) (userName stri
 	perRow := dbClient.QueryRow("SELECT permission FROM vpc_user WHERE user_key = ? AND vpc_id = ?", user, vpcId)
 	err = perRow.Scan(&permission)
 	if err != nil {
-		permission = -1
+		permission = 0
 	}
 	err = nil
 	return
+}
+
+func reviewApp(idStr string, userKey ed25519.PublicKey, statusStr string) error {
+	id, _ := strconv.Atoi(idStr)
+	status, _ := strconv.Atoi(statusStr)
+	appRows := dbClient.QueryRow("SELECT destination_vpc_id FROM applications WHERE id=?", id)
+	var dstVpcId int
+	err := appRows.Scan(&dstVpcId)
+	if err != nil {
+		return fmt.Errorf("no application %v", idStr)
+	}
+	_, permission, err := getUserInfoByKeyAndVpc(dstVpcId, userKey)
+	user := parseUserFromKey(userKey)
+	if err != nil {
+		return fmt.Errorf("internal server error: unknown user")
+	}
+	if !hasReviewPer(permission) {
+		return fmt.Errorf("no permission")
+	}
+	_, err = dbClient.Exec("UPDATE applications SET approval_status=?,reviewer=? WHERE id=?", status, user, id)
+	if err != nil {
+		return fmt.Errorf("failed to update database")
+	}
+	return nil
 }
 
 func parseReq(req *http.Request) (userKey ed25519.PublicKey, data map[string][]byte) {
@@ -365,7 +393,7 @@ func inboxServer() error {
 			} else {
 				err := updateFileInfo(file.Hash)
 				if err != nil {
-					writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Updata file info failed.")})
+					writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Update file info failed.")})
 					return
 				}
 			}
@@ -381,7 +409,7 @@ func inboxServer() error {
 			return
 		}
 		if len(needFileList) == 0 {
-			var iniStat int16 = 1
+			var iniStat int = 1
 			if src == 0 {
 				iniStat = 0
 			}
@@ -440,11 +468,15 @@ func outboxServer() error {
 			return
 		}
 		userKey, _ := parseReq(r)
+		if userKey == nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
+			return
+		}
 		user := parseUserFromKey(userKey)
 		vpcId := getVpcIdByIp(r.RemoteAddr)
 		_, permission, err := getUserInfoByKeyAndVpc(vpcId, userKey)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
 			return
 		}
 		var appRows *sql.Rows
@@ -475,6 +507,10 @@ func outboxServer() error {
 			return
 		}
 		userKey, data := parseReq(r)
+		if userKey == nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
+			return
+		}
 		idStr := string(data["id"])
 		id, _ := strconv.Atoi(idStr)
 		user := parseUserFromKey(userKey)
@@ -483,7 +519,11 @@ func outboxServer() error {
 		var dst int
 		appRows.Scan(&owner, &dst)
 		if user != owner {
-			_, permission, _ := getUserInfoByKeyAndVpc(dst, userKey)
+			_, permission, err := getUserInfoByKeyAndVpc(dst, userKey)
+			if err != nil {
+				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
+				return
+			}
 			if !hasReviewPer(permission) {
 				w.WriteHeader(http.StatusForbidden)
 				w.Write([]byte("User have no permission."))
@@ -506,17 +546,31 @@ func outboxServer() error {
 			return
 		}
 		userKey, data := parseReq(r)
+		if userKey == nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
+			return
+		}
 		fileHash := string(data["hash"])
 		appId, _ := strconv.Atoi(string(data["appid"]))
 		user := parseUserFromKey(userKey)
-		appRows := dbClient.QueryRow("SELECT owner,destination_vpc_id FROM applications WHERE id=?", appId)
+		appRows := dbClient.QueryRow("SELECT owner,destination_vpc_id,approval_status FROM applications WHERE id=?", appId)
 		var owner string
 		var dst int
-		appRows.Scan(&owner, &dst)
+		var status int
+		appRows.Scan(&owner, &dst, &status)
 		if user != owner {
-			_, permission, _ := getUserInfoByKeyAndVpc(dst, userKey)
+			_, permission, err := getUserInfoByKeyAndVpc(dst, userKey)
+			if err != nil {
+				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
+				return
+			}
 			if !hasReviewPer(permission) {
-				writeRes(w, http.StatusForbidden, map[string][]byte{"error": []byte("User have no permission.")})
+				writeRes(w, http.StatusForbidden, map[string][]byte{"error": []byte("User has no permission.")})
+				return
+			}
+		} else {
+			if !isAppStatAllow(status) {
+				writeRes(w, http.StatusForbidden, map[string][]byte{"error": []byte("Application unreviewed, connect leader")})
 				return
 			}
 		}
@@ -531,6 +585,32 @@ func outboxServer() error {
 			return
 		}
 		writeRes(w, http.StatusOK, map[string][]byte{"url": []byte(url), "hash": []byte(fileHash)})
+	})
+	mux.HandleFunc("/review", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
+			return
+		}
+		userKey, data := parseReq(r)
+		if userKey == nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
+			return
+		}
+		var appIdList []string
+		appIdListBytes := data["appidlist"]
+		status := string(data["status"])
+		json.Unmarshal(appIdListBytes, &appIdList)
+		reviewStat := make(map[string]string)
+		for _, id := range appIdList {
+			err := reviewApp(id, userKey, status)
+			if err != nil {
+				reviewStat[id] = err.Error()
+			} else {
+				reviewStat[id] = "ok"
+			}
+		}
+		reviewStatBytes, _ := json.Marshal(reviewStat)
+		writeRes(w, http.StatusOK, map[string][]byte{"reviewstat": reviewStatBytes})
 	})
 	server := &http.Server{
 		Addr: ":9991",

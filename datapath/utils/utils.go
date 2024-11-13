@@ -19,6 +19,11 @@ import (
 	"path/filepath"
 )
 
+const (
+	PerReview = 1 << 1
+	PerAdmin  = 1 << 2
+)
+
 type AppFile struct {
 	Hash    string
 	RelPath string
@@ -27,7 +32,7 @@ type AppFile struct {
 type AppInfo struct {
 	Id       int
 	User     string
-	Status   int8
+	Status   int
 	Src, Dst string
 }
 
