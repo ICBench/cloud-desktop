@@ -374,7 +374,7 @@ func main() {
 				jsonBytes, _ := json.Marshal(userInfo)
 				fmt.Println(string(jsonBytes))
 			} else {
-				fmt.Printf("Authorized %v permission %v\n", userInfo.Name, userInfo.Permission)
+				fmt.Printf("Authorized %v(public key: %v) permission %v\n", userInfo.Name, strings.Replace(userInfo.Key, "\n", `\n`, -1), userInfo.Permission)
 			}
 		},
 	}

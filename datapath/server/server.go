@@ -711,7 +711,7 @@ func outboxServer() error {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
 			return
 		}
-		targetInfo := utils.UserInfo{Name: targetUserName, Permission: targetPer}
+		targetInfo := utils.UserInfo{Name: targetUserName, Permission: targetPer, Key: targetUser}
 		targetInfoBytes, _ := json.Marshal(targetInfo)
 		writeRes(w, http.StatusOK, map[string][]byte{"userinfo": targetInfoBytes})
 	})
