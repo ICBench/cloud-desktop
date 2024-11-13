@@ -256,6 +256,12 @@ func checkSign(dataBytes []byte, signature []byte) ed25519.PublicKey {
 			return pubKey
 		}
 	}
+	loadPubKeys()
+	for _, pubKey := range pubKeys {
+		if ok := ed25519.Verify(pubKey, dataBytes, signature); ok {
+			return pubKey
+		}
+	}
 	return nil
 }
 
