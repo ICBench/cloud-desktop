@@ -41,6 +41,18 @@ type UploadFile struct {
 	Url  string
 }
 
+type VpcInfo struct {
+	Id   int
+	Cidr string
+	Name string
+}
+
+type UserInfo struct {
+	Name       string
+	Key        string
+	Permission int
+}
+
 func LoadCertsAndKeys(caPoolPath string, caPool *x509.CertPool, loPrivKeyPath string, loPrivKey *ed25519.PrivateKey) {
 	filepath.Walk(caPoolPath, func(path string, info fs.FileInfo, err error) error {
 		if !info.Mode().IsRegular() {

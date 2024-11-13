@@ -612,6 +612,109 @@ func outboxServer() error {
 		reviewStatBytes, _ := json.Marshal(reviewStat)
 		writeRes(w, http.StatusOK, map[string][]byte{"reviewstat": reviewStatBytes})
 	})
+	mux.HandleFunc("/listvpc", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
+			return
+		}
+		userKey, _ := parseReq(r)
+		if userKey == nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
+			return
+		}
+		user := parseUserFromKey(userKey)
+		vpcRows, err := dbClient.Query("SELECT vpc_id FROM vpc_user WHERE user_key=?", user)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
+			return
+		}
+		var vpcList []utils.VpcInfo
+		for vpcRows.Next() {
+			var vpcId int
+			vpcRows.Scan(&vpcId)
+			vpcInfoRows := dbClient.QueryRow("SELECT cidr,vpc_name FROM vpc WHERE vpc_id=?", vpcId)
+			var cidr, vpcName string
+			err := vpcInfoRows.Scan(&cidr, &vpcName)
+			if err != nil {
+				continue
+			}
+			vpcList = append(vpcList, utils.VpcInfo{Id: vpcId, Name: vpcName, Cidr: cidr})
+		}
+		vpcListBytes, _ := json.Marshal(vpcList)
+		writeRes(w, http.StatusOK, map[string][]byte{"vpclist": vpcListBytes})
+	})
+	mux.HandleFunc("/listuser", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
+			return
+		}
+		userKey, data := parseReq(r)
+		if userKey == nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
+			return
+		}
+		vpcId, _ := strconv.Atoi(string(data["vpcid"]))
+		_, permission, err := getUserInfoByKeyAndVpc(vpcId, userKey)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
+			return
+		}
+		if !hasAdminPer(permission) {
+			writeRes(w, http.StatusForbidden, map[string][]byte{"error": []byte("Permission denied, need admin.")})
+			return
+		}
+		userRows, err := dbClient.Query("SELECT users.user_name,vpc_user.user_key,vpc_user.permission FROM vpc_user INNER JOIN users ON vpc_user.user_key=users.public_key WHERE vpc_user.vpc_id=?", vpcId)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
+			return
+		}
+		var userList []utils.UserInfo
+		for userRows.Next() {
+			var tmpInfo utils.UserInfo
+			userRows.Scan(&tmpInfo.Name, &tmpInfo.Key, &tmpInfo.Permission)
+			userList = append(userList, tmpInfo)
+		}
+		userListBytes, _ := json.Marshal(userList)
+		writeRes(w, http.StatusOK, map[string][]byte{"userlist": userListBytes})
+	})
+	mux.HandleFunc("/authuser", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
+			return
+		}
+		userKey, data := parseReq(r)
+		if userKey == nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
+			return
+		}
+		vpcId, _ := strconv.Atoi(string(data["vpcid"]))
+		_, permission, err := getUserInfoByKeyAndVpc(vpcId, userKey)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
+			return
+		}
+		if !hasAdminPer(permission) {
+			writeRes(w, http.StatusForbidden, map[string][]byte{"error": []byte("Permission denied, need admin.")})
+			return
+		}
+		targetUser := string(data["user"])
+		var targetUserName string
+		userRows := dbClient.QueryRow("SELECT user_name FROM users WHERE public_key=?", targetUser)
+		err = userRows.Scan(&targetUserName)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("User not found.")})
+			return
+		}
+		targetPer, _ := strconv.Atoi(string(data["permission"]))
+		_, err = dbClient.Exec("INSERT INTO vpc_user (vpc_id,user_key,permission) VALUES (?,?,?) ON DUPLICATE KEY UPDATE permission=?", vpcId, targetUser, targetPer, targetPer)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
+			return
+		}
+		targetInfo := utils.UserInfo{Name: targetUserName, Permission: targetPer}
+		targetInfoBytes, _ := json.Marshal(targetInfo)
+		writeRes(w, http.StatusOK, map[string][]byte{"userinfo": targetInfoBytes})
+	})
 	server := &http.Server{
 		Addr: ":9991",
 		TLSConfig: &tls.Config{

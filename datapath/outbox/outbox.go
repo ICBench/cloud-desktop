@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
 	"datapath/utils"
 
@@ -152,6 +153,45 @@ func reviewApp(appIdList []string, status string) map[string]string {
 	return reviewStat
 }
 
+func listVpc() []utils.VpcInfo {
+	host := fmt.Sprintf("https://%v:9991/listvpc", serverHost)
+	var vpcList []utils.VpcInfo
+	res := utils.SendReq(client, host, map[string][]byte{}, &loPrivKey)
+	data := utils.ParseRes(res)
+	if res.StatusCode != http.StatusOK {
+		log.Printf("http %v: %v", res.StatusCode, string(data["error"]))
+		os.Exit(-1)
+	}
+	json.Unmarshal(data["vpclist"], &vpcList)
+	return vpcList
+}
+
+func listUserByVpcId(vpcId int) []utils.UserInfo {
+	host := fmt.Sprintf("https://%v:9991/listuser", serverHost)
+	var userList []utils.UserInfo
+	res := utils.SendReq(client, host, map[string][]byte{"vpcid": []byte(strconv.Itoa(vpcId))}, &loPrivKey)
+	data := utils.ParseRes(res)
+	if res.StatusCode != http.StatusOK {
+		log.Printf("http %v: %v", res.StatusCode, string(data["error"]))
+		os.Exit(-1)
+	}
+	json.Unmarshal(data["userlist"], &userList)
+	return userList
+}
+
+func authUser(user string, vpcId int, permission int) utils.UserInfo {
+	host := fmt.Sprintf("https://%v:9991/authuser", serverHost)
+	res := utils.SendReq(client, host, map[string][]byte{"user": []byte(user), "vpcid": []byte(strconv.Itoa(vpcId)), "permission": []byte(strconv.Itoa(permission))}, &loPrivKey)
+	data := utils.ParseRes(res)
+	if res.StatusCode != http.StatusOK {
+		log.Printf("http %v: %v", res.StatusCode, string(data["error"]))
+		os.Exit(-1)
+	}
+	var userInfo utils.UserInfo
+	json.Unmarshal(data["userinfo"], &userInfo)
+	return userInfo
+}
+
 func startGUI() {
 
 }
@@ -287,10 +327,67 @@ func main() {
 		},
 	}
 	cmdReviewApp.Flags().BoolVarP(&cancelFlag, "cancel", "c", false, "Cancel the passed application if specified this flag")
+	var cmdVpc = &cobra.Command{
+		Use:   "vpc",
+		Short: "Show VPC list",
+		Run: func(cmd *cobra.Command, args []string) {
+			vpcList := listVpc()
+			if jsonFlag {
+				jsonBytes, _ := json.Marshal(vpcList)
+				fmt.Println(string(jsonBytes))
+			} else {
+				fmt.Printf("%5v %20v %20v\n", "ID", "VPC name", "CIDR")
+				for _, info := range vpcList {
+					fmt.Printf("%5v %20v %20v\n", info.Id, info.Name, info.Cidr)
+				}
+			}
+		},
+	}
+	var vpcId int
+	var cmdUser = &cobra.Command{
+		Use:   "user",
+		Short: "Show users in specified VPC",
+		Run: func(cmd *cobra.Command, args []string) {
+			userList := listUserByVpcId(vpcId)
+			if jsonFlag {
+				jsonBytes, _ := json.Marshal(userList)
+				fmt.Println(string(jsonBytes))
+			} else {
+				fmt.Printf("%20v %120v %10v\n", "Username", "Public key", "Permission")
+				for _, info := range userList {
+					fmt.Printf("%20v %120v %10v\n", info.Name, strings.Replace(info.Key, "\n", `\n`, -1), info.Permission)
+				}
+			}
+		},
+	}
+	cmdUser.Flags().IntVarP(&vpcId, "vpcid", "v", 0, "Specifiy VPC ID")
+	cmdUser.MarkFlagRequired("vpcid")
+	var keyStr string
+	var permission int
+	var cmdAuthUser = &cobra.Command{
+		Use:   "auth",
+		Short: "Authorize user",
+		Run: func(cmd *cobra.Command, args []string) {
+			keyStr = strings.Replace(keyStr, `\n`, "\n", -1)
+			userInfo := authUser(keyStr, vpcId, permission)
+			if jsonFlag {
+				jsonBytes, _ := json.Marshal(userInfo)
+				fmt.Println(string(jsonBytes))
+			} else {
+				fmt.Printf("Authorized %v permission %v\n", userInfo.Name, userInfo.Permission)
+			}
+		},
+	}
+	cmdAuthUser.Flags().IntVarP(&vpcId, "vpcid", "v", 0, "Specify VPC ID")
+	cmdAuthUser.MarkFlagRequired("vpcid")
+	cmdAuthUser.Flags().StringVarP(&keyStr, "user", "u", "", "Specify user by user's public key")
+	cmdAuthUser.MarkFlagRequired("user")
+	cmdAuthUser.Flags().IntVarP(&permission, "permission", "p", 0, "Specify permission")
+	cmdAuthUser.MarkFlagRequired("permission")
 	var completion = &cobra.Command{
 		Use: "completion",
 	}
 	completion.Hidden = true
-	rootCmd.AddCommand(cmdInfo, cmdList, cmdViewApp, cmdDownload, cmdReviewApp, completion)
+	rootCmd.AddCommand(cmdInfo, cmdList, cmdViewApp, cmdDownload, cmdReviewApp, cmdVpc, cmdUser, cmdAuthUser, completion)
 	rootCmd.Execute()
 }
