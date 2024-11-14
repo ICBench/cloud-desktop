@@ -100,7 +100,7 @@ func downloadFile(fileName string, fileHash string, appId string, file *os.File)
 	}
 	if string(data["hash"]) == fileHash {
 		url := string(data["url"])
-		res, err := client.Get(url)
+		res, err := http.Get(url)
 		if err != nil {
 			log.Printf("Failed to download file: %v\n", err)
 			return

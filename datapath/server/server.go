@@ -20,28 +20,26 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
+	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
 	"github.com/coreos/go-systemd/v22/journal"
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 var (
-	caPoolPath     = "/usr/local/etc/dataPathServer/CApool"
-	caPool         = x509.NewCertPool()
-	crtFilePath    = "/usr/local/etc/dataPathServer/server.crt"
-	keyFilePath    = "/usr/local/etc/dataPathServer/server.key"
-	pubKeys        = []ed25519.PublicKey{}
-	dbClient       *sql.DB
-	ossClient      *minio.Client
-	outOssClient   *minio.Client
-	ossAccessKey   = "yX61qRAWhaHcQPEXwYcQ"
-	ossSecretKey   = "cUzNE7CuCy53DZMtMP667ahn2Nz7eDPdJoBcUQtQ"
-	ossEndpoint    = "127.0.0.1:9000"
-	outOssEndpoint = "106.15.236.65:9000"
-	vpcIdList      map[int]*net.IPNet
-	vpcNameList    map[string]int
-	vpcList        map[int]string
+	caPoolPath   = "/usr/local/etc/dataPathServer/CApool"
+	caPool       = x509.NewCertPool()
+	crtFilePath  = "/usr/local/etc/dataPathServer/server.crt"
+	keyFilePath  = "/usr/local/etc/dataPathServer/server.key"
+	pubKeys      = []ed25519.PublicKey{}
+	dbClient     *sql.DB
+	vpcIdList    map[int]*net.IPNet
+	vpcNameList  map[string]int
+	vpcList      map[int]string
+	inOssClient  *oss.Client
+	outOssClient *oss.Client
+	ossRegion    = "cn-shanghai"
+	ossBucket    = "icb-cloud-desktop-test"
 )
 
 func loadCerts() {
@@ -78,46 +76,12 @@ func connectDb() {
 }
 
 func connectOss() {
-	var err error
-	certPool := x509.NewCertPool()
-	certBytes := []byte("-----BEGIN CERTIFICATE-----\nMIIB4DCCAYagAwIBAgIQfaQTy1UvE2nSmVdcBt6x+DAKBggqhkjOPQQDAjA6MRww\nGgYDVQQKExNDZXJ0Z2VuIERldmVsb3BtZW50MRowGAYDVQQLDBFyb290QHh1YnVu\ndHUyNC4wNDAeFw0yNDExMDUwNjAzMThaFw0yNTExMDUwNjAzMThaMDoxHDAaBgNV\nBAoTE0NlcnRnZW4gRGV2ZWxvcG1lbnQxGjAYBgNVBAsMEXJvb3RAeHVidW50dTI0\nLjA0MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEt2f2CQobGLrpG9xWCCvjlfJQ\nefnwQmnEs8mnaCTC5QeAqqRz8dN9CyoFktnT76U11yhW04wHBk+g/9CDUucAG6Nu\nMGwwDgYDVR0PAQH/BAQDAgKkMBMGA1UdJQQMMAoGCCsGAQUFBwMBMA8GA1UdEwEB\n/wQFMAMBAf8wHQYDVR0OBBYEFLfADvpqY/Mb+uetjzilEO6bzeZQMBUGA1UdEQQO\nMAyHBH8AAAGHBGoP7EEwCgYIKoZIzj0EAwIDSAAwRQIhAOVDtvm6T0iu8CfMgPiN\nAtlBwc+qteQ4qKRv8rCk2NJTAiAeVBJJoxXPL/EvyEtVFSUYd+qgvh/ri6cJRBVV\noFmAZA==\n-----END CERTIFICATE-----")
-	certPool.AppendCertsFromPEM(certBytes)
-	ossClient, err = minio.New(ossEndpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(ossAccessKey, ossSecretKey, ""),
-		Secure: true,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs: certPool,
-			},
-		},
-	})
-	if err != nil {
-		journal.Print(journal.PriErr, "Failed to connect OSS: %v\n", err)
-		os.Exit(-1)
-	}
-	_, err = ossClient.ListBuckets(context.Background())
-	if err != nil {
-		journal.Print(journal.PriErr, "Failed to connect OSS: %v\n", err)
-		os.Exit(-1)
-	}
-	outOssClient, err = minio.New(outOssEndpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(ossAccessKey, ossSecretKey, ""),
-		Secure: true,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs: certPool,
-			},
-		},
-	})
-	if err != nil {
-		journal.Print(journal.PriErr, "Failed to connect OSS: %v\n", err)
-		os.Exit(-1)
-	}
-	_, err = outOssClient.ListBuckets(context.Background())
-	if err != nil {
-		journal.Print(journal.PriErr, "Failed to connect OSS: %v\n", err)
-		os.Exit(-1)
-	}
+	provider := credentials.NewEcsRoleCredentialsProvider()
+	cfg := oss.LoadDefaultConfig().
+		WithCredentialsProvider(provider).
+		WithRegion(ossRegion)
+	inOssClient = oss.NewClient(cfg.WithUseInternalEndpoint(true))
+	outOssClient = oss.NewClient(cfg.WithUseInternalEndpoint(false))
 }
 
 func loadPubKeys() {
@@ -177,8 +141,8 @@ func checkFileExist(hash string) bool {
 	if rows.Next() {
 		return true
 	} else {
-		_, err := ossClient.StatObject(context.Background(), "files", hash, minio.GetObjectOptions{})
-		if err != nil {
+		exist, err := inOssClient.IsObjectExist(context.TODO(), ossBucket, hash)
+		if err != nil || !exist {
 			return false
 		}
 		expTime := time.Now().AddDate(0, 30, 0)
@@ -232,19 +196,30 @@ func updateFileInfo(hash string) error {
 	return err
 }
 
-func getPreSignedUploadUrl(fileName string) (string, error) {
-	url, err := outOssClient.PresignedPutObject(context.Background(), "files", fileName, 1*time.Hour)
-	return url.String(), err
+func getPreSignedUploadUrl(fileName string, useIn bool) (*oss.PresignResult, error) {
+	var client *oss.Client
+	if useIn {
+		client = inOssClient
+	} else {
+		client = outOssClient
+	}
+	result, err := client.Presign(context.TODO(), &oss.PutObjectRequest{Bucket: oss.Ptr(ossBucket), Key: oss.Ptr(fileName)}, oss.PresignExpires(1*time.Hour))
+	return result, err
 }
 
-func getPreSignedDownloadUrl(fileName string) (string, error) {
-	url, err := outOssClient.PresignedGetObject(context.Background(), "files", fileName, 1*time.Hour, nil)
-	return url.String(), err
+func getPreSignedDownloadUrl(fileName string, useIn bool) (string, error) {
+	var client *oss.Client
+	if useIn {
+		client = inOssClient
+	} else {
+		client = outOssClient
+	}
+	result, err := client.Presign(context.TODO(), &oss.GetObjectRequest{Bucket: oss.Ptr(ossBucket), Key: oss.Ptr(fileName)}, oss.PresignExpires(1*time.Hour))
+	return result.URL, err
 }
 
 func delFile(hash string) {
-	ctx := context.Background()
-	err := ossClient.RemoveObject(ctx, "files", hash, minio.RemoveObjectOptions{})
+	_, err := inOssClient.DeleteObject(context.TODO(), &oss.DeleteObjectRequest{Bucket: oss.Ptr(ossBucket), Key: oss.Ptr(hash)})
 	if err != nil {
 		journal.Print(journal.PriErr, "Delete file in oss error: %v\n", err)
 	}
@@ -287,6 +262,10 @@ func getVpcIdByName(vpcName string) (int, error) {
 		err = fmt.Errorf("VPC %v not found, choose outside", vpcName)
 	}
 	return id, err
+}
+
+func isOutside(vpcId int) bool {
+	return vpcId == 0
 }
 
 func parseUserFromKey(userKey ed25519.PublicKey) (user string) {
@@ -387,15 +366,16 @@ func inboxServer() error {
 			writeRes(w, http.StatusMisdirectedRequest, map[string][]byte{"error": []byte("Empty send file list.")})
 			return
 		}
+		vpcId := getVpcIdByIp(r.RemoteAddr)
 		var needFileList []utils.UploadFile
 		for _, file := range sendFileList {
 			if !checkFileExist(file.Hash) {
-				url, err := getPreSignedUploadUrl(file.Hash)
+				result, err := getPreSignedUploadUrl(file.Hash, !isOutside(vpcId))
 				if err != nil {
 					writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to get presigned url")})
 					return
 				}
-				needFileList = append(needFileList, utils.UploadFile{Hash: file.Hash, Url: url})
+				needFileList = append(needFileList, utils.UploadFile{Hash: file.Hash, Url: result.URL, Method: result.Method, Headers: result.SignedHeaders})
 			} else {
 				err := updateFileInfo(file.Hash)
 				if err != nil {
@@ -560,11 +540,12 @@ func outboxServer() error {
 		appId, _ := strconv.Atoi(string(data["appid"]))
 		user := parseUserFromKey(userKey)
 		appRows := dbClient.QueryRow("SELECT owner,destination_vpc_id,approval_status FROM applications WHERE id=?", appId)
+		vpcId := getVpcIdByIp(r.RemoteAddr)
 		var owner string
 		var dst int
 		var status int
 		appRows.Scan(&owner, &dst, &status)
-		if user != owner {
+		if user != owner || vpcId != dst {
 			_, permission, err := getUserInfoByKeyAndVpc(dst, userKey)
 			if err != nil {
 				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
@@ -585,7 +566,7 @@ func outboxServer() error {
 			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("File not belong to application")})
 			return
 		}
-		url, err := getPreSignedDownloadUrl(fileHash)
+		url, err := getPreSignedDownloadUrl(fileHash, !isOutside(vpcId))
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("File not found")})
 			return

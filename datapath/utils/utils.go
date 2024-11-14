@@ -37,8 +37,10 @@ type AppInfo struct {
 }
 
 type UploadFile struct {
-	Hash string
-	Url  string
+	Hash    string
+	Url     string
+	Method  string
+	Headers map[string]string
 }
 
 type VpcInfo struct {
@@ -70,7 +72,6 @@ func LoadCertsAndKeys(caPoolPath string, caPool *x509.CertPool, loPrivKeyPath st
 		caPool.AppendCertsFromPEM(certBytes)
 		return nil
 	})
-	caPool.AppendCertsFromPEM([]byte("-----BEGIN CERTIFICATE-----\nMIIB4DCCAYagAwIBAgIQfaQTy1UvE2nSmVdcBt6x+DAKBggqhkjOPQQDAjA6MRww\nGgYDVQQKExNDZXJ0Z2VuIERldmVsb3BtZW50MRowGAYDVQQLDBFyb290QHh1YnVu\ndHUyNC4wNDAeFw0yNDExMDUwNjAzMThaFw0yNTExMDUwNjAzMThaMDoxHDAaBgNV\nBAoTE0NlcnRnZW4gRGV2ZWxvcG1lbnQxGjAYBgNVBAsMEXJvb3RAeHVidW50dTI0\nLjA0MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEt2f2CQobGLrpG9xWCCvjlfJQ\nefnwQmnEs8mnaCTC5QeAqqRz8dN9CyoFktnT76U11yhW04wHBk+g/9CDUucAG6Nu\nMGwwDgYDVR0PAQH/BAQDAgKkMBMGA1UdJQQMMAoGCCsGAQUFBwMBMA8GA1UdEwEB\n/wQFMAMBAf8wHQYDVR0OBBYEFLfADvpqY/Mb+uetjzilEO6bzeZQMBUGA1UdEQQO\nMAyHBH8AAAGHBGoP7EEwCgYIKoZIzj0EAwIDSAAwRQIhAOVDtvm6T0iu8CfMgPiN\nAtlBwc+qteQ4qKRv8rCk2NJTAiAeVBJJoxXPL/EvyEtVFSUYd+qgvh/ri6cJRBVV\noFmAZA==\n-----END CERTIFICATE-----"))
 	loPrivKeyByte, err := os.ReadFile(loPrivKeyPath)
 	if err != nil {
 		log.Printf("Failed to load private key %v: %v\n", loPrivKeyPath, err)

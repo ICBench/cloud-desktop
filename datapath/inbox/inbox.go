@@ -41,15 +41,16 @@ func sendApplication(host string, sendFileList []utils.AppFile, dst string) *htt
 	return utils.SendReq(client, host, map[string][]byte{"sendfile": jsonData, "dstname": []byte(dst)}, &loPrivKey)
 }
 
-func sendFile(url string, file *os.File) *http.Response {
+func sendFile(info utils.UploadFile, file *os.File) *http.Response {
 	fileStat, _ := file.Stat()
 	fileSize := fileStat.Size()
 	bar := progressbar.DefaultBytes(fileSize, fmt.Sprintf("Uploading %v:", fileStat.Name()))
 	reqBody := io.TeeReader(file, bar)
-	req, _ := http.NewRequest("PUT", url, reqBody)
-	req.Header.Set("Content-Type", "application/octet-stream")
-	req.ContentLength = fileSize
-	res, err := client.Do(req)
+	req, _ := http.NewRequest(info.Method, info.Url, reqBody)
+	for k, v := range info.Headers {
+		req.Header.Add(k, v)
+	}
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Printf("Failed to upload file: %v", err)
 	}
@@ -110,7 +111,7 @@ func inbox(host string, filePaths []string, dst string) {
 					log.Printf("Failed to access %v: %v", path, err)
 				}
 				defer file.Close()
-				res := sendFile(needFile.Url, file)
+				res := sendFile(needFile, file)
 				if res.StatusCode != http.StatusOK {
 					log.Printf("Send file %v error, http %v\n", path, res.StatusCode)
 				}
