@@ -280,7 +280,17 @@ func reviewApp(idStr string, userKey ed25519.PublicKey, statusStr string) error 
 	if !hasReviewPer(permission) {
 		return fmt.Errorf("no permission")
 	}
+	userRows := dbClient.QueryRow("SELECT user_name FROM users WHERE public_key=?", user)
+	var userName string
+	err = userRows.Scan(&userName)
+	if err != nil {
+		return fmt.Errorf("failed to query user")
+	}
 	_, err = dbClient.Exec("UPDATE applications SET approval_status=?,reviewer=? WHERE id=?", status, user, id)
+	if err != nil {
+		return fmt.Errorf("failed to update database")
+	}
+	_, err = dbClient.Exec("INSERT INTO review_records (reviewer_name,reviewer_key,approval_status,review_time,application_id) VALUES (?,?,?,?,?)", userName, user, status, time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("failed to update database")
 	}
