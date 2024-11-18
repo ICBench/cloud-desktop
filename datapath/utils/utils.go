@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
@@ -17,6 +18,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 const (
@@ -34,13 +40,6 @@ type AppInfo struct {
 	User     string
 	Status   int
 	Src, Dst string
-}
-
-type UploadFile struct {
-	Hash    string
-	Url     string
-	Method  string
-	Headers map[string]string
 }
 
 type VpcInfo struct {
@@ -146,4 +145,18 @@ func ParseRes(res *http.Response) (data map[string][]byte) {
 		data[fieldName], _ = hex.DecodeString(fieldValue)
 	}
 	return
+}
+
+func NewOssClient(accessKeyId, accessKeySecret, securityToken string, useIn bool) *s3.Client {
+	creds := credentials.NewStaticCredentialsProvider(accessKeyId, accessKeySecret, securityToken)
+	cfg, _ := config.LoadDefaultConfig(context.TODO(), config.WithCredentialsProvider(creds))
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		if useIn {
+			o.BaseEndpoint = aws.String("https://s3.oss-cn-shanghai-internal.aliyuncs.com")
+		} else {
+			o.BaseEndpoint = aws.String("https://s3.oss-cn-shanghai.aliyuncs.com")
+		}
+		o.Region = "cn-shanghai"
+	})
+	return client
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/x509"
@@ -8,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -16,7 +16,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/schollz/progressbar/v3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +28,7 @@ var (
 	crtFilePath   = "/usr/local/etc/dataPathClient/certs/client.crt"
 	keyFilePath   = "/usr/local/etc/dataPathClient/certs/client.key"
 	loPrivKeyPath = "/usr/local/etc/dataPathClient/privKey"
+	ossBucket     = "icb-cloud-desktop-test"
 	client        = &http.Client{}
 	loPrivKey     = ed25519.PrivateKey{}
 	retryTime     = 10
@@ -39,22 +42,6 @@ func sendApplication(host string, sendFileList []utils.AppFile, dst string) *htt
 		return nil
 	}
 	return utils.SendReq(client, host, map[string][]byte{"sendfile": jsonData, "dstname": []byte(dst)}, &loPrivKey)
-}
-
-func sendFile(info utils.UploadFile, file *os.File) *http.Response {
-	fileStat, _ := file.Stat()
-	fileSize := fileStat.Size()
-	bar := progressbar.DefaultBytes(fileSize, fmt.Sprintf("Uploading %v:", fileStat.Name()))
-	reqBody := io.TeeReader(file, bar)
-	req, _ := http.NewRequest(info.Method, info.Url, reqBody)
-	for k, v := range info.Headers {
-		req.Header.Add(k, v)
-	}
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Printf("Failed to upload file: %v", err)
-	}
-	return res
 }
 
 func inbox(host string, filePaths []string, dst string) {
@@ -98,23 +85,26 @@ func inbox(host string, filePaths []string, dst string) {
 		data := utils.ParseRes(res)
 		switch res.StatusCode {
 		case http.StatusPreconditionRequired:
-			var needFileList []utils.UploadFile
-			err := json.Unmarshal(data["needfile"], &needFileList)
-			if err != nil {
-				log.Printf("Failed to unmarshal response body: %v\n", err)
-				return
-			}
+			var needFileList []string
+			json.Unmarshal(data["needfile"], &needFileList)
+			var useIn = string(data["usein"]) == "true"
+			accessKeyId := string(data["accesskeyid"])
+			accessKeySecret := string(data["accesskeysecret"])
+			securityToken := string(data["securitytoken"])
+			ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, useIn)
+			uploader := manager.NewUploader(ossClient)
 			for _, needFile := range needFileList {
-				path := filePathTmp[needFile.Hash]
+				path := filePathTmp[needFile]
 				file, err := os.Open(path)
 				if err != nil {
 					log.Printf("Failed to access %v: %v", path, err)
 				}
 				defer file.Close()
-				res := sendFile(needFile, file)
-				if res.StatusCode != http.StatusOK {
-					log.Printf("Send file %v error, http %v\n", path, res.StatusCode)
-				}
+				uploader.Upload(context.TODO(), &s3.PutObjectInput{
+					Bucket: aws.String(ossBucket),
+					Key:    aws.String(needFile),
+					Body:   file,
+				})
 			}
 		case http.StatusOK:
 			warning := string(data["warning"])

@@ -1,11 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -16,7 +16,9 @@ import (
 
 	"datapath/utils"
 
-	"github.com/schollz/progressbar/v3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/spf13/cobra"
 )
 
@@ -29,6 +31,7 @@ var (
 	client        = &http.Client{}
 	loPrivKeyPath = "/usr/local/etc/dataPathClient/privKey"
 	loPrivKey     = ed25519.PrivateKey{}
+	ossBucket     = "icb-cloud-desktop-test"
 )
 
 func queryUserInfo() map[string]string {
@@ -86,35 +89,22 @@ func queryAppInfo(idList []int) (appInfo map[int][]utils.AppFile) {
 	return
 }
 
-func downloadFile(fileName string, fileHash string, appId string, file *os.File) {
+func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAppList []int) {
 	host := fmt.Sprintf("https://%v:9991/download", serverHost)
-	var sendData = map[string][]byte{
-		"hash":  []byte(fileHash),
-		"appid": []byte(appId),
-	}
-	res := utils.SendReq(client, host, sendData, &loPrivKey)
+	idListBytes, _ := json.Marshal(idList)
+	res := utils.SendReq(client, host, map[string][]byte{"appidlist": idListBytes}, &loPrivKey)
 	data := utils.ParseRes(res)
-	if res.StatusCode != http.StatusOK {
-		log.Printf("Query failed http: %v %v\n", res.StatusCode, string(data["error"]))
-		return
-	}
-	if string(data["hash"]) == fileHash {
-		url := string(data["url"])
-		res, err := http.Get(url)
-		if err != nil {
-			log.Printf("Failed to download file: %v\n", err)
-			return
-		}
-		bar := progressbar.DefaultBytes(res.ContentLength, fmt.Sprintf("Downloading %v:", fileName))
-		io.Copy(io.MultiWriter(file, bar), res.Body)
-	} else {
-		log.Printf("Unmatched file received")
-	}
-}
-
-func downloadFiles(idList []int, basePath string) {
-	appInfo := queryAppInfo(idList)
-	for id, app := range appInfo {
+	var fileList map[int][]utils.AppFile
+	json.Unmarshal(data["allowedapplist"], &allowedAppList)
+	json.Unmarshal(data["rejectedapplist"], &rejectedAppList)
+	json.Unmarshal(data["filelist"], &fileList)
+	var useIn = string(data["usein"]) == "true"
+	accessKeyId := string(data["accesskeyid"])
+	accessKeySecret := string(data["accesskeysecret"])
+	securityToken := string(data["securitytoken"])
+	ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, useIn)
+	downloader := manager.NewDownloader(ossClient)
+	for id, app := range fileList {
 		appSavePath := basePath + strconv.Itoa(id) + "/"
 		err := os.MkdirAll(appSavePath, 0755)
 		if err != nil {
@@ -134,9 +124,13 @@ func downloadFiles(idList []int, basePath string) {
 				os.Exit(-1)
 			}
 			defer file.Close()
-			downloadFile(info.RelPath, info.Hash, strconv.Itoa(id), file)
+			downloader.Download(context.TODO(), file, &s3.GetObjectInput{
+				Bucket: aws.String(ossBucket),
+				Key:    aws.String(info.Hash),
+			})
 		}
 	}
+	return
 }
 
 func reviewApp(appIdList []string, status string) map[string]string {
@@ -286,12 +280,23 @@ func main() {
 			return nil
 		},
 		Run: func(cmd *cobra.Command, args []string) {
-			var idList []int
-			for _, arg := range args {
-				id, _ := strconv.Atoi(arg)
-				idList = append(idList, id)
+			allowedAppList, rejectedAppList := downloadFiles(args, saveFilePath)
+			if jsonFlag {
+				var data = map[string][]int{"allowed": allowedAppList, "rejected": rejectedAppList}
+				dataBytes, _ := json.Marshal(data)
+				fmt.Println(string(dataBytes))
+			} else {
+				if len(allowedAppList) > 0 {
+					fmt.Printf("Allowed applications:\n%v\n", allowedAppList)
+				} else {
+					fmt.Println("No allowed application")
+				}
+				if len(rejectedAppList) > 0 {
+					fmt.Printf("Rejected applications:\n%v\n", rejectedAppList)
+				} else {
+					fmt.Println("No rejected application")
+				}
 			}
-			downloadFiles(idList, saveFilePath)
 		},
 	}
 	cmdDownload.Flags().StringVarP(&saveFilePath, "out", "o", "./", "Specify download directory.")

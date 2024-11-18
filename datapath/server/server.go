@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
+	"datapath/aliutils"
 	"datapath/utils"
 	"encoding/hex"
 	"encoding/json"
@@ -20,26 +21,23 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
-	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/coreos/go-systemd/v22/journal"
 	_ "github.com/go-sql-driver/mysql"
 )
 
 var (
-	caPoolPath   = "/usr/local/etc/dataPathServer/CApool"
-	caPool       = x509.NewCertPool()
-	crtFilePath  = "/usr/local/etc/dataPathServer/server.crt"
-	keyFilePath  = "/usr/local/etc/dataPathServer/server.key"
-	pubKeys      = []ed25519.PublicKey{}
-	dbClient     *sql.DB
-	vpcIdList    map[int]*net.IPNet
-	vpcNameList  map[string]int
-	vpcList      map[int]string
-	inOssClient  *oss.Client
-	outOssClient *oss.Client
-	ossRegion    = "cn-shanghai"
-	ossBucket    = "icb-cloud-desktop-test"
+	caPoolPath  = "/usr/local/etc/dataPathServer/CApool"
+	caPool      = x509.NewCertPool()
+	crtFilePath = "/usr/local/etc/dataPathServer/server.crt"
+	keyFilePath = "/usr/local/etc/dataPathServer/server.key"
+	pubKeys     = []ed25519.PublicKey{}
+	dbClient    *sql.DB
+	vpcIdList   map[int]*net.IPNet
+	vpcNameList map[string]int
+	vpcList     map[int]string
+	ossBucket   = "icb-cloud-desktop-test"
 )
 
 func loadCerts() {
@@ -75,21 +73,13 @@ func connectDb() {
 	}
 }
 
-func connectOss() {
-	provider := credentials.NewEcsRoleCredentialsProvider()
-	cfg := oss.LoadDefaultConfig().
-		WithCredentialsProvider(provider).
-		WithRegion(ossRegion)
-	inOssClient = oss.NewClient(cfg.WithUseInternalEndpoint(true))
-	outOssClient = oss.NewClient(cfg.WithUseInternalEndpoint(false))
-}
-
 func loadPubKeys() {
 	keyCows, err := dbClient.Query("SELECT public_key FROM users")
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to get pubkey from database: %v\n", err)
 		return
 	}
+	pubKeys = []ed25519.PublicKey{}
 	for keyCows.Next() {
 		var keyStr string
 		keyCows.Scan(&keyStr)
@@ -132,26 +122,34 @@ func loadVpcList() {
 	}
 }
 
-func checkFileExist(hash string) bool {
-	rows, err := dbClient.Query("SELECT hash FROM files WHERE hash = ?", hash)
-	if err != nil {
-		journal.Print(journal.PriErr, "Failed to query file info from database: %v\n", err)
-		return false
-	}
-	if rows.Next() {
-		return true
-	} else {
-		exist, err := inOssClient.IsObjectExist(context.TODO(), ossBucket, hash)
-		if err != nil || !exist {
-			return false
-		}
-		expTime := time.Now().AddDate(0, 30, 0)
-		_, err = dbClient.Exec("INSERT INTO files (hash,expiration_time) VALUES (?,?)", hash, expTime)
+func checkFileExist(client *s3.Client, sendFileList []utils.AppFile) ([]string, error) {
+	var needFileList = []string{}
+	for _, file := range sendFileList {
+		rows, err := dbClient.Query("SELECT hash FROM files WHERE hash = ?", file.Hash)
 		if err != nil {
-			journal.Print(journal.PriErr, "Update file database error: %v\n", err)
+			journal.Print(journal.PriErr, "Failed to query file info from database: %v\n", err)
+			return []string{}, err
 		}
-		return true
+		if !rows.Next() {
+			_, err := client.HeadObject(context.TODO(), &s3.HeadObjectInput{Bucket: aws.String(ossBucket), Key: aws.String(file.Hash)})
+			if err != nil {
+				needFileList = append(needFileList, file.Hash)
+			} else {
+				expTime := time.Now().AddDate(0, 30, 0)
+				_, err = dbClient.Exec("INSERT INTO files (hash,expiration_time) VALUES (?,?)", file.Hash, expTime)
+				if err != nil {
+					journal.Print(journal.PriErr, "Failed to insert file info to database: %v\n", err)
+					return []string{}, err
+				}
+			}
+		} else {
+			err := updateFileInfo(file.Hash)
+			if err != nil {
+				return []string{}, err
+			}
+		}
 	}
+	return needFileList, nil
 }
 
 func hasReviewPer(permission int) bool {
@@ -194,35 +192,6 @@ func updateFileInfo(hash string) error {
 		journal.Print(journal.PriErr, "Update file database error: %v\n", err)
 	}
 	return err
-}
-
-func getPreSignedUploadUrl(fileName string, useIn bool) (*oss.PresignResult, error) {
-	var client *oss.Client
-	if useIn {
-		client = inOssClient
-	} else {
-		client = outOssClient
-	}
-	result, err := client.Presign(context.TODO(), &oss.PutObjectRequest{Bucket: oss.Ptr(ossBucket), Key: oss.Ptr(fileName)}, oss.PresignExpires(1*time.Hour))
-	return result, err
-}
-
-func getPreSignedDownloadUrl(fileName string, useIn bool) (string, error) {
-	var client *oss.Client
-	if useIn {
-		client = inOssClient
-	} else {
-		client = outOssClient
-	}
-	result, err := client.Presign(context.TODO(), &oss.GetObjectRequest{Bucket: oss.Ptr(ossBucket), Key: oss.Ptr(fileName)}, oss.PresignExpires(1*time.Hour))
-	return result.URL, err
-}
-
-func delFile(hash string) {
-	_, err := inOssClient.DeleteObject(context.TODO(), &oss.DeleteObjectRequest{Bucket: oss.Ptr(ossBucket), Key: oss.Ptr(hash)})
-	if err != nil {
-		journal.Print(journal.PriErr, "Delete file in oss error: %v\n", err)
-	}
 }
 
 func checkSign(dataBytes []byte, signature []byte) ed25519.PublicKey {
@@ -278,8 +247,7 @@ func parseUserFromKey(userKey ed25519.PublicKey) (user string) {
 	return
 }
 
-func getUserInfoByKeyAndVpc(vpcId int, userKey ed25519.PublicKey) (userName string, permission int, err error) {
-	user := parseUserFromKey(userKey)
+func getUserInfoByUserAndVpc(vpcId int, user string) (userName string, permission int, err error) {
 	userRow := dbClient.QueryRow("SELECT user_name FROM users WHERE public_key = ?", user)
 	err = userRow.Scan(&userName)
 	if err != nil {
@@ -304,8 +272,8 @@ func reviewApp(idStr string, userKey ed25519.PublicKey, statusStr string) error 
 	if err != nil {
 		return fmt.Errorf("no application %v", idStr)
 	}
-	_, permission, err := getUserInfoByKeyAndVpc(dstVpcId, userKey)
 	user := parseUserFromKey(userKey)
+	_, permission, err := getUserInfoByUserAndVpc(dstVpcId, user)
 	if err != nil {
 		return fmt.Errorf("internal server error: unknown user")
 	}
@@ -317,6 +285,42 @@ func reviewApp(idStr string, userKey ed25519.PublicKey, statusStr string) error 
 		return fmt.Errorf("failed to update database")
 	}
 	return nil
+}
+
+func filterAllowedApp(user string, vpcId int, appStrList []string) (allowedAppList, rejectedAppList []int, err error) {
+	for _, idStr := range appStrList {
+		var id int
+		id, err = strconv.Atoi(idStr)
+		if err != nil {
+			return
+		}
+		appRows := dbClient.QueryRow("SELECT owner,destination_vpc_id,approval_status FROM applications WHERE id=?", id)
+		var owner string
+		var dst int
+		var status int
+		err = appRows.Scan(&owner, &dst, &status)
+		if err != nil {
+			return
+		}
+		if user != owner || vpcId != dst {
+			var permission int
+			_, permission, err = getUserInfoByUserAndVpc(dst, user)
+			if err != nil {
+				return
+			}
+			if !hasReviewPer(permission) {
+				rejectedAppList = append(rejectedAppList, id)
+				continue
+			}
+		} else {
+			if !isAppStatAllow(status) {
+				rejectedAppList = append(rejectedAppList, id)
+				continue
+			}
+		}
+		allowedAppList = append(allowedAppList, id)
+	}
+	return
 }
 
 func parseReq(req *http.Request) (userKey ed25519.PublicKey, data map[string][]byte) {
@@ -360,30 +364,6 @@ func inboxServer() error {
 			return
 		}
 		dstStr := string(data["dstname"])
-		var sendFileList []utils.AppFile
-		err := json.Unmarshal(data["sendfile"], &sendFileList)
-		if err != nil {
-			writeRes(w, http.StatusMisdirectedRequest, map[string][]byte{"error": []byte("Empty send file list.")})
-			return
-		}
-		vpcId := getVpcIdByIp(r.RemoteAddr)
-		var needFileList []utils.UploadFile
-		for _, file := range sendFileList {
-			if !checkFileExist(file.Hash) {
-				result, err := getPreSignedUploadUrl(file.Hash, !isOutside(vpcId))
-				if err != nil {
-					writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to get presigned url")})
-					return
-				}
-				needFileList = append(needFileList, utils.UploadFile{Hash: file.Hash, Url: result.URL, Method: result.Method, Headers: result.SignedHeaders})
-			} else {
-				err := updateFileInfo(file.Hash)
-				if err != nil {
-					writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Update file info failed.")})
-					return
-				}
-			}
-		}
 		src := getVpcIdByIp(r.RemoteAddr)
 		dst, err := getVpcIdByName(dstStr)
 		var warning string = ""
@@ -392,6 +372,19 @@ func inboxServer() error {
 		}
 		if dst == src {
 			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Same src and dst.")})
+			return
+		}
+		var sendFileList []utils.AppFile
+		err = json.Unmarshal(data["sendfile"], &sendFileList)
+		if err != nil {
+			writeRes(w, http.StatusMisdirectedRequest, map[string][]byte{"error": []byte("Error send file list.")})
+			return
+		}
+		cred := aliutils.GetStsCred("", []string{}, ossBucket)
+		client := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, true)
+		needFileList, err := checkFileExist(client, sendFileList)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access file info.")})
 			return
 		}
 		if len(needFileList) == 0 {
@@ -409,7 +402,20 @@ func inboxServer() error {
 			}
 		} else {
 			returnBytes, _ := json.Marshal(needFileList)
-			writeRes(w, http.StatusPreconditionRequired, map[string][]byte{"needfile": returnBytes})
+			var useInStr string
+			if !isOutside(src) {
+				useInStr = "true"
+			} else {
+				useInStr = "false"
+			}
+			cred := aliutils.GetStsCred(aliutils.ActionPutObject, []string{}, ossBucket)
+			writeRes(w, http.StatusPreconditionRequired, map[string][]byte{
+				"needfile":        returnBytes,
+				"accesskeyid":     []byte(cred.AccessKeyId),
+				"accesskeysecret": []byte(cred.AccessKeySecret),
+				"securitytoken":   []byte(cred.SecurityToken),
+				"usein":           []byte(useInStr),
+			})
 			return
 		}
 	})
@@ -437,7 +443,7 @@ func outboxServer() error {
 			return
 		}
 		vpcId := getVpcIdByIp(r.RemoteAddr)
-		userName, permission, err := getUserInfoByKeyAndVpc(vpcId, userKey)
+		userName, permission, err := getUserInfoByUserAndVpc(vpcId, parseUserFromKey(userKey))
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
 			return
@@ -460,7 +466,7 @@ func outboxServer() error {
 		}
 		user := parseUserFromKey(userKey)
 		vpcId := getVpcIdByIp(r.RemoteAddr)
-		_, permission, err := getUserInfoByKeyAndVpc(vpcId, userKey)
+		_, permission, err := getUserInfoByUserAndVpc(vpcId, user)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
 			return
@@ -505,7 +511,7 @@ func outboxServer() error {
 		var dst int
 		appRows.Scan(&owner, &dst)
 		if user != owner {
-			_, permission, err := getUserInfoByKeyAndVpc(dst, userKey)
+			_, permission, err := getUserInfoByUserAndVpc(dst, user)
 			if err != nil {
 				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
 				return
@@ -536,42 +542,49 @@ func outboxServer() error {
 			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
 			return
 		}
-		fileHash := string(data["hash"])
-		appId, _ := strconv.Atoi(string(data["appid"]))
 		user := parseUserFromKey(userKey)
-		appRows := dbClient.QueryRow("SELECT owner,destination_vpc_id,approval_status FROM applications WHERE id=?", appId)
 		vpcId := getVpcIdByIp(r.RemoteAddr)
-		var owner string
-		var dst int
-		var status int
-		appRows.Scan(&owner, &dst, &status)
-		if user != owner || vpcId != dst {
-			_, permission, err := getUserInfoByKeyAndVpc(dst, userKey)
-			if err != nil {
-				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
-				return
-			}
-			if !hasReviewPer(permission) {
-				writeRes(w, http.StatusForbidden, map[string][]byte{"error": []byte("User has no permission.")})
-				return
-			}
-		} else {
-			if !isAppStatAllow(status) {
-				writeRes(w, http.StatusForbidden, map[string][]byte{"error": []byte("Application unreviewed, connect leader")})
-				return
-			}
-		}
-		appFileRow, _ := dbClient.Query("SELECT * FROM application_file WHERE application_id=? AND file_hash=?", appId, fileHash)
-		if !appFileRow.Next() {
-			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("File not belong to application")})
-			return
-		}
-		url, err := getPreSignedDownloadUrl(fileHash, !isOutside(vpcId))
+		var appIdList []string
+		json.Unmarshal(data["appidlist"], &appIdList)
+		allowedAppList, rejectedAppList, err := filterAllowedApp(user, vpcId, appIdList)
 		if err != nil {
-			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("File not found")})
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte(err.Error())})
 			return
 		}
-		writeRes(w, http.StatusOK, map[string][]byte{"url": []byte(url), "hash": []byte(fileHash)})
+		var hashList []string
+		var fileList = map[int][]utils.AppFile{}
+		for _, appId := range allowedAppList {
+			fileList[appId] = []utils.AppFile{}
+			appFileRows, err := dbClient.Query("SELECT file_hash,file_info FROM application_file WHERE application_id=?", appId)
+			if err != nil {
+				continue
+			}
+			for appFileRows.Next() {
+				var tmpInfo utils.AppFile
+				appFileRows.Scan(&tmpInfo.Hash, &tmpInfo.RelPath)
+				fileList[appId] = append(fileList[appId], tmpInfo)
+				hashList = append(hashList, tmpInfo.Hash)
+			}
+		}
+		cred := aliutils.GetStsCred(aliutils.ActionGetObject, hashList, ossBucket)
+		var useInStr string
+		if !isOutside(vpcId) {
+			useInStr = "true"
+		} else {
+			useInStr = "false"
+		}
+		allowedAppListBytes, _ := json.Marshal(allowedAppList)
+		rejectedAppListBytes, _ := json.Marshal(rejectedAppList)
+		fileListBytes, _ := json.Marshal(fileList)
+		writeRes(w, http.StatusOK, map[string][]byte{
+			"accesskeyid":     []byte(cred.AccessKeyId),
+			"accesskeysecret": []byte(cred.AccessKeySecret),
+			"securitytoken":   []byte(cred.SecurityToken),
+			"usein":           []byte(useInStr),
+			"allowedapplist":  allowedAppListBytes,
+			"rejectedapplist": rejectedAppListBytes,
+			"filelist":        fileListBytes,
+		})
 	})
 	mux.HandleFunc("/review", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -641,7 +654,7 @@ func outboxServer() error {
 			return
 		}
 		vpcId, _ := strconv.Atoi(string(data["vpcid"]))
-		_, permission, err := getUserInfoByKeyAndVpc(vpcId, userKey)
+		_, permission, err := getUserInfoByUserAndVpc(vpcId, parseUserFromKey(userKey))
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
 			return
@@ -675,7 +688,7 @@ func outboxServer() error {
 			return
 		}
 		vpcId, _ := strconv.Atoi(string(data["vpcid"]))
-		_, permission, err := getUserInfoByKeyAndVpc(vpcId, userKey)
+		_, permission, err := getUserInfoByUserAndVpc(vpcId, parseUserFromKey(userKey))
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
 			return
@@ -724,7 +737,6 @@ func fileTidy() {
 	for outdatedFileRow.Next() {
 		var hash string
 		outdatedFileRow.Scan(&hash)
-		delFile(hash)
 		delFileList[hash] = struct{}{}
 		outdatedReqRow, err := dbClient.Query("SELECT application_id FROM application_file WHERE file_hash = ?", hash)
 		if err != nil {
@@ -740,7 +752,10 @@ func fileTidy() {
 	for req := range delReqList {
 		dbClient.Exec("DELETE FROM applications WHERE id = ?", req)
 	}
+	cred := aliutils.GetStsCred("", []string{}, ossBucket)
+	client := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, true)
 	for file := range delFileList {
+		client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{Bucket: aws.String(ossBucket), Key: aws.String(file)})
 		dbClient.Exec("DELETE FROM files WHERE hash = ?", file)
 	}
 }
@@ -748,9 +763,9 @@ func fileTidy() {
 func main() {
 	loadCerts()
 	connectDb()
-	connectOss()
 	loadPubKeys()
 	loadVpcList()
+	aliutils.StartStsServer()
 	go func() {
 		for {
 			err := inboxServer()
