@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math/big"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -159,4 +160,10 @@ func NewOssClient(accessKeyId, accessKeySecret, securityToken string, useIn bool
 		o.Region = "cn-shanghai"
 	})
 	return client
+}
+
+func InetAtoN(ipStr string) uint {
+	ip := net.ParseIP(ipStr)
+	tmp := big.NewInt(0).SetBytes(ip.To4())
+	return uint(tmp.Int64())
 }

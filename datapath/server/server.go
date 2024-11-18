@@ -34,10 +34,7 @@ var (
 	keyFilePath = "/usr/local/etc/dataPathServer/server.key"
 	pubKeys     = []ed25519.PublicKey{}
 	dbClient    *sql.DB
-	vpcIdList   map[int]*net.IPNet
-	vpcNameList map[string]int
-	vpcList     map[int]string
-	ossBucket   = "icb-cloud-desktop-test"
+	ossBucket = "icb-cloud-desktop-test"
 )
 
 func loadCerts() {
@@ -91,34 +88,6 @@ func loadPubKeys() {
 			continue
 		}
 		pubKeys = append(pubKeys, tmpKey.(ed25519.PublicKey))
-	}
-}
-
-func loadVpcList() {
-	vpcIdList = make(map[int]*net.IPNet)
-	vpcNameList = make(map[string]int)
-	vpcList = make(map[int]string)
-	vpcRows, err := dbClient.Query("SELECT vpc_id,cidr,vpc_name FROM vpc")
-	if err != nil {
-		journal.Print(journal.PriErr, "Failed to load VPC list: %v\n", err)
-		return
-	}
-	for vpcRows.Next() {
-		var id int
-		var cidrStr string
-		var vpcName string
-		err := vpcRows.Scan(&id, &cidrStr, &vpcName)
-		if err != nil {
-			continue
-		}
-		_, cidr, err := net.ParseCIDR(cidrStr)
-		if err != nil {
-			journal.Print(journal.PriErr, "Failed to parse VPC %v CIDR: %v\n", id, err)
-			continue
-		}
-		vpcIdList[id] = cidr
-		vpcNameList[vpcName] = id
-		vpcList[id] = vpcName
 	}
 }
 
@@ -209,28 +178,51 @@ func checkSign(dataBytes []byte, signature []byte) ed25519.PublicKey {
 	return nil
 }
 
-func getVpcIdByIp(addrStr string) int {
+func getVpcIdByIp(addrStr string) (int, error) {
 	ipStr, _, err := net.SplitHostPort(addrStr)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("invalid address")
 	}
-	addr := net.ParseIP(ipStr)
-	for id, vpc := range vpcIdList {
-		if vpc.Contains(addr) {
-			return id
-		}
+	ipValue := utils.InetAtoN(ipStr)
+	vpcRows, err := dbClient.Query("SELECT vpc_id FROM vpc WHERE start_ip_value<? AND end_ip_value>?", ipValue, ipValue)
+	if err != nil {
+		return 0, fmt.Errorf("failed to access database")
 	}
-	return 0
+	var id int
+	if vpcRows.Next() {
+		vpcRows.Scan(&id)
+	} else {
+		id = 0
+	}
+	return id, nil
 }
 
 func getVpcIdByName(vpcName string) (int, error) {
-	var err error = nil
-	id, exist := vpcNameList[vpcName]
-	if !exist {
-		id = 0
-		err = fmt.Errorf("VPC %v not found, choose outside", vpcName)
+	vpcRows, err := dbClient.Query("SELECT vpc_id FROM vpc WHERE vpc_name=?", vpcName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to access database")
 	}
-	return id, err
+	var id int
+	if vpcRows.Next() {
+		vpcRows.Scan(&id)
+	} else {
+		id = 0
+	}
+	return id, nil
+}
+
+func getVpcNameById(vpcId int) (string, error) {
+	vpcRows, err := dbClient.Query("SELECT vpc_name FROM vpc WHERE vpc_id=?", vpcId)
+	if err != nil {
+		return "outside", fmt.Errorf("failed to access database")
+	}
+	var name string
+	if vpcRows.Next() {
+		vpcRows.Scan(&name)
+	} else {
+		name = "outside"
+	}
+	return name, nil
 }
 
 func isOutside(vpcId int) bool {
@@ -374,18 +366,15 @@ func inboxServer() error {
 			return
 		}
 		dstStr := string(data["dstname"])
-		src := getVpcIdByIp(r.RemoteAddr)
-		dst, err := getVpcIdByName(dstStr)
+		src, _ := getVpcIdByIp(r.RemoteAddr)
+		dst, _ := getVpcIdByName(dstStr)
 		var warning string = ""
-		if err != nil {
-			warning = err.Error()
-		}
 		if dst == src {
 			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Same src and dst.")})
 			return
 		}
 		var sendFileList []utils.AppFile
-		err = json.Unmarshal(data["sendfile"], &sendFileList)
+		err := json.Unmarshal(data["sendfile"], &sendFileList)
 		if err != nil {
 			writeRes(w, http.StatusMisdirectedRequest, map[string][]byte{"error": []byte("Error send file list.")})
 			return
@@ -452,14 +441,15 @@ func outboxServer() error {
 			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
 			return
 		}
-		vpcId := getVpcIdByIp(r.RemoteAddr)
+		vpcId, _ := getVpcIdByIp(r.RemoteAddr)
 		userName, permission, err := getUserInfoByUserAndVpc(vpcId, parseUserFromKey(userKey))
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
 			return
 		}
+		vpcName, _ := getVpcNameById(vpcId)
 		writeRes(w, http.StatusOK, map[string][]byte{
-			"vpc":        []byte(vpcList[vpcId]),
+			"vpc":        []byte(vpcName),
 			"username":   []byte(userName),
 			"permission": []byte(strconv.Itoa(permission)),
 		})
@@ -475,7 +465,7 @@ func outboxServer() error {
 			return
 		}
 		user := parseUserFromKey(userKey)
-		vpcId := getVpcIdByIp(r.RemoteAddr)
+		vpcId, _ := getVpcIdByIp(r.RemoteAddr)
 		_, permission, err := getUserInfoByUserAndVpc(vpcId, user)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
@@ -496,8 +486,8 @@ func outboxServer() error {
 			var tmpApp utils.AppInfo
 			var srcId, dstId int
 			appRows.Scan(&tmpApp.Id, &tmpApp.User, &srcId, &dstId, &tmpApp.Status)
-			tmpApp.Src = vpcList[srcId]
-			tmpApp.Dst = vpcList[dstId]
+			tmpApp.Src, _ = getVpcNameById(srcId)
+			tmpApp.Dst, _ = getVpcNameById(dstId)
 			appList = append(appList, tmpApp)
 		}
 		appListBytes, _ := json.Marshal(appList)
@@ -553,7 +543,7 @@ func outboxServer() error {
 			return
 		}
 		user := parseUserFromKey(userKey)
-		vpcId := getVpcIdByIp(r.RemoteAddr)
+		vpcId, _ := getVpcIdByIp(r.RemoteAddr)
 		var appIdList []string
 		json.Unmarshal(data["appidlist"], &appIdList)
 		allowedAppList, rejectedAppList, err := filterAllowedApp(user, vpcId, appIdList)
@@ -774,7 +764,6 @@ func main() {
 	loadCerts()
 	connectDb()
 	loadPubKeys()
-	loadVpcList()
 	aliutils.StartStsServer()
 	go func() {
 		for {
