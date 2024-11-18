@@ -300,6 +300,7 @@ func main() {
 		},
 	}
 	cmdDownload.Flags().StringVarP(&saveFilePath, "out", "o", "./", "Specify download directory.")
+	cmdDownload.MarkFlagDirname("out")
 	var cancelFlag bool
 	var cmdReviewApp = &cobra.Command{
 		Use:   "review",

@@ -23,6 +23,7 @@ import (
 )
 
 var (
+	serverHost    = "106.15.236.65"
 	caPoolPath    = "/usr/local/etc/dataPathClient/CApool"
 	caPool        = x509.NewCertPool()
 	crtFilePath   = "/usr/local/etc/dataPathClient/certs/client.crt"
@@ -44,8 +45,8 @@ func sendApplication(host string, sendFileList []utils.AppFile, dst string) *htt
 	return utils.SendReq(client, host, map[string][]byte{"sendfile": jsonData, "dstname": []byte(dst)}, &loPrivKey)
 }
 
-func inbox(host string, filePaths []string, dst string) {
-	host = fmt.Sprintf("https://%v:9990/", host)
+func inbox(filePaths []string, dst string) {
+	host := fmt.Sprintf("https://%v:9990/", serverHost)
 	var sendFileList []utils.AppFile
 	filePathTmp := make(map[string]string)
 	listSize := 0
@@ -127,17 +128,14 @@ func main() {
 	utils.LoadHttpClient(crtFilePath, keyFilePath, client, caPool, 9992)
 	var dst string
 	var rootCmd = &cobra.Command{
-		Use:   "inbox <host> <file(s)>",
+		Use:   "inbox <file(s)>",
 		Short: "Send files to specified host",
-		Args:  cobra.ArbitraryArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) < 2 {
-				return fmt.Errorf("need to specify host and file")
-			}
-			inbox(args[0], args[1:], dst)
-			return nil
+		Args:  cobra.MinimumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			inbox(args[:], dst)
 		},
 	}
 	rootCmd.Flags().StringVarP(&dst, "dst", "d", "", "Specify destination VPC")
+	rootCmd.MarkFlagRequired("dst")
 	rootCmd.Execute()
 }

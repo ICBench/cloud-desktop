@@ -26,6 +26,8 @@ var (
 	reqChan           = make(chan stsReq, 1000)
 	maxStsClientTime  = 50 * time.Minute
 	credMap           sync.Map
+	aliStsRole        = "acs:ram::1450424585376992:role/cloud-desktop-test-oss"
+	aliSessionName    = "cloud-desktop-test"
 )
 
 type stsReq struct {
@@ -88,8 +90,8 @@ func startStsServer() {
 		req := <-reqChan
 		mu.Lock()
 		res, _ := stsClient.AssumeRole(&sts.AssumeRoleRequest{
-			RoleArn:         aws.String("acs:ram::1450424585376992:role/cloud-desktop"),
-			RoleSessionName: aws.String("cloud-desktop-test"),
+			RoleArn:         aws.String(aliStsRole),
+			RoleSessionName: aws.String(aliSessionName),
 			DurationSeconds: aws.Int64(900),
 			Policy:          aws.String(newPolicy(req.action, req.resource).ToString()),
 		})
