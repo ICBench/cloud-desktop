@@ -130,7 +130,18 @@ func main() {
 	var rootCmd = &cobra.Command{
 		Use:   "inbox <file(s)>",
 		Short: "Send files to specified host",
-		Args:  cobra.MinimumNArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) < 1 {
+				return fmt.Errorf("requires at least 1 arg")
+			}
+			for _, arg := range args {
+				_, err := os.Stat(arg)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 		Run: func(cmd *cobra.Command, args []string) {
 			inbox(args[:], dst)
 		},
