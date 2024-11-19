@@ -95,6 +95,7 @@ func LoadHttpClient(crtFilePath string, keyFilePath string, client *http.Client,
 	cert, err := tls.LoadX509KeyPair(crtFilePath, keyFilePath)
 	if err != nil {
 		log.Println("Failed to load certs")
+		os.Exit(-1)
 	}
 	client.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{
@@ -103,7 +104,7 @@ func LoadHttpClient(crtFilePath string, keyFilePath string, client *http.Client,
 		},
 		DialContext: (&net.Dialer{
 			LocalAddr: &net.TCPAddr{
-				// Port: port,
+				Port: port,
 			},
 		}).DialContext,
 	}

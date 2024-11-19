@@ -2,6 +2,7 @@ package aliutils
 
 import (
 	"encoding/json"
+	"os"
 	"sync"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	sts "github.com/alibabacloud-go/sts-20150401/v2/client"
 	stscredentials "github.com/aliyun/credentials-go/credentials"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/coreos/go-systemd/v22/journal"
 )
 
 const (
@@ -22,12 +24,14 @@ const (
 )
 
 var (
-	maxReqTimesPerSec = 50
-	reqChan           = make(chan stsReq, 1000)
-	maxStsClientTime  = 50 * time.Minute
-	credMap           sync.Map
-	aliStsRole        = "acs:ram::1450424585376992:role/cloud-desktop-test-oss"
-	aliSessionName    = "cloud-desktop-test"
+	maxReqTimesPerSec  = 50
+	reqChan            = make(chan stsReq, 1000)
+	maxStsClientTime   = 50 * time.Minute
+	credMap            sync.Map
+	aliStsRole         = "acs:ram::1450424585376992:role/cloud-desktop-test-oss"
+	aliSessionName     = "cloud-desktop-test"
+	stsClientMu        sync.Mutex
+	stsClientRetryTime = 10
 )
 
 type stsReq struct {
@@ -65,37 +69,54 @@ func (p policy) ToString() string {
 	return string(jsonBytes)
 }
 
-func startStsServer() {
+func loadStsClient(stsClient *sts.Client) {
+	stsClientMu.Lock()
+	defer stsClientMu.Unlock()
+	for i := 1; i <= stsClientRetryTime; i++ {
+		stsConf := new(stscredentials.Config).SetType("ecs_ram_role")
+		stsCredProvider, err := stscredentials.NewCredential(stsConf)
+		if err != nil {
+			continue
+		}
+		t, err := stsCredProvider.GetCredential()
+		if err != nil {
+			continue
+		}
+		stsClient, err = sts.NewClient(&client.Config{
+			AccessKeyId:     t.AccessKeyId,
+			AccessKeySecret: t.AccessKeySecret,
+			SecurityToken:   t.SecurityToken,
+			Endpoint:        aws.String("sts-vpc.cn-shanghai.aliyuncs.com"),
+		})
+		if err == nil {
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
+	journal.Print(journal.PriErr, "Failed to create sts client, check RAM role setting")
+	os.Exit(-1)
+}
+
+func StartStsServer() {
 	minStsReqIntvl := time.Second / time.Duration(maxReqTimesPerSec)
-	var mu sync.Mutex
 	var stsClient *sts.Client
+	loadStsClient(stsClient)
 	go func() {
 		for {
-			stsConf := new(stscredentials.Config).SetType("ecs_ram_role")
-			stsCredProvider, _ := stscredentials.NewCredential(stsConf)
-			t, _ := stsCredProvider.GetCredential()
-			mu.Lock()
-			stsClient, _ = sts.NewClient(&client.Config{
-				AccessKeyId:     t.AccessKeyId,
-				AccessKeySecret: t.AccessKeySecret,
-				SecurityToken:   t.SecurityToken,
-				Endpoint:        aws.String("sts-vpc.cn-shanghai.aliyuncs.com"),
-			})
-			mu.Unlock()
+			loadStsClient(stsClient)
 			time.Sleep(maxStsClientTime)
 		}
 	}()
-	time.Sleep(time.Second * 5)
 	for {
 		req := <-reqChan
-		mu.Lock()
+		stsClientMu.Lock()
 		res, _ := stsClient.AssumeRole(&sts.AssumeRoleRequest{
 			RoleArn:         aws.String(aliStsRole),
 			RoleSessionName: aws.String(aliSessionName),
 			DurationSeconds: aws.Int64(900),
 			Policy:          aws.String(newPolicy(req.action, req.resource).ToString()),
 		})
-		mu.Unlock()
+		stsClientMu.Unlock()
 		expTime, _ := time.Parse(time.RFC3339, aws.ToString(res.Body.Credentials.Expiration))
 		cred := StsCred{
 			AccessKeyId:     aws.ToString(res.Body.Credentials.AccessKeyId),
@@ -106,12 +127,6 @@ func startStsServer() {
 		req.resChan <- cred
 		time.Sleep(minStsReqIntvl)
 	}
-}
-
-func StartStsServer() {
-	go func() {
-		startStsServer()
-	}()
 }
 
 func getStsCred(action, resource []string) StsCred {

@@ -100,6 +100,7 @@ func inbox(filePaths []string, dst string) {
 				file, err := os.Open(path)
 				if err != nil {
 					log.Printf("Failed to access %v: %v", path, err)
+					continue
 				}
 				defer file.Close()
 				uploader.Upload(context.TODO(), &s3.PutObjectInput{
@@ -109,9 +110,13 @@ func inbox(filePaths []string, dst string) {
 				})
 			}
 		case http.StatusOK:
-			warning := string(data["warning"])
-			if warning != "" {
-				log.Printf("Application sent succeed with warning: %v\n", warning)
+			var warning []string
+			json.Unmarshal(data["warning"], &warning)
+			if len(warning) > 0 {
+				log.Println("Application sent succeed with warning:")
+				for _, w := range warning {
+					fmt.Println(w)
+				}
 			} else {
 				log.Println("Application sent succeed.")
 			}

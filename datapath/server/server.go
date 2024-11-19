@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/coreos/go-systemd/v22/journal"
 	_ "github.com/go-sql-driver/mysql"
@@ -37,7 +39,7 @@ var (
 )
 
 func loadCerts() {
-	filepath.Walk(caPoolPath, func(path string, info fs.FileInfo, err error) error {
+	err := filepath.Walk(caPoolPath, func(path string, info fs.FileInfo, err error) error {
 		if !info.Mode().IsRegular() {
 			return nil
 		}
@@ -53,13 +55,17 @@ func loadCerts() {
 		caPool.AppendCertsFromPEM(certBytes)
 		return nil
 	})
+	if err != nil {
+		journal.Print(journal.PriErr, "Failed to load certs")
+		os.Exit(-1)
+	}
 }
 
 func connectDb() {
 	var err error
 	dbClient, err = sql.Open("mysql", "shizhao:icbench@tcp(127.0.0.1:3306)/data_path_server")
 	if err != nil {
-		journal.Print(journal.PriErr, "Failed to connect database: %v\n", err)
+		journal.Print(journal.PriErr, "Invalid database parameter: %v\n", err)
 		os.Exit(-1)
 	}
 	err = dbClient.Ping()
@@ -80,7 +86,12 @@ func checkFileExist(client *s3.Client, sendFileList []utils.AppFile) ([]string, 
 		if !rows.Next() {
 			_, err := client.HeadObject(context.TODO(), &s3.HeadObjectInput{Bucket: aws.String(ossBucket), Key: aws.String(file.Hash)})
 			if err != nil {
-				needFileList = append(needFileList, file.Hash)
+				var responseError *awshttp.ResponseError
+				if errors.As(err, &responseError) && responseError.ResponseError.HTTPStatusCode() == http.StatusNotFound {
+					needFileList = append(needFileList, file.Hash)
+				} else {
+					return []string{}, err
+				}
 			} else {
 				expTime := time.Now().AddDate(0, 30, 0)
 				_, err = dbClient.Exec("INSERT INTO files (hash,expiration_time) VALUES (?,?)", file.Hash, expTime)
@@ -100,7 +111,7 @@ func checkFileExist(client *s3.Client, sendFileList []utils.AppFile) ([]string, 
 }
 
 func hasReviewPer(permission int) bool {
-	return permission&utils.PerReview != 0 || hasAdminPer(permission)
+	return permission&utils.PerReview != 0
 }
 
 func hasAdminPer(permission int) bool {
@@ -144,7 +155,6 @@ func updateFileInfo(hash string) error {
 func checkSign(dataBytes []byte, userName string, signature []byte) ed25519.PublicKey {
 	keyCows, err := dbClient.Query("SELECT public_key FROM users WHERE user_name=?", userName)
 	if err != nil {
-		journal.Print(journal.PriErr, "Failed to get pubkey from database: %v\n", err)
 		return nil
 	}
 	if keyCows.Next() {
@@ -154,7 +164,6 @@ func checkSign(dataBytes []byte, userName string, signature []byte) ed25519.Publ
 		block, _ := pem.Decode(pubKeyBytes)
 		tmpKey, err := x509.ParsePKIXPublicKey(block.Bytes)
 		if err != nil {
-			journal.Print(journal.PriErr, "Failed to parse pubkey: %v\n", err)
 			return nil
 		}
 		key := tmpKey.(ed25519.PublicKey)
@@ -168,15 +177,15 @@ func checkSign(dataBytes []byte, userName string, signature []byte) ed25519.Publ
 	}
 }
 
-func getVpcIdByIp(addrStr string) (int, error) {
+func getVpcIdByIp(addrStr string) int {
 	ipStr, _, err := net.SplitHostPort(addrStr)
 	if err != nil {
-		return 0, fmt.Errorf("invalid address")
+		return 0
 	}
 	ipValue := utils.InetAtoN(ipStr)
 	vpcRows, err := dbClient.Query("SELECT vpc_id FROM vpc WHERE start_ip_value<? AND end_ip_value>?", ipValue, ipValue)
 	if err != nil {
-		return 0, fmt.Errorf("failed to access database")
+		return -1
 	}
 	var id int
 	if vpcRows.Next() {
@@ -184,7 +193,7 @@ func getVpcIdByIp(addrStr string) (int, error) {
 	} else {
 		id = 0
 	}
-	return id, nil
+	return id
 }
 
 func getVpcIdByName(vpcName string) (int, error) {
@@ -204,7 +213,7 @@ func getVpcIdByName(vpcName string) (int, error) {
 func getVpcNameById(vpcId int) (string, error) {
 	vpcRows, err := dbClient.Query("SELECT vpc_name FROM vpc WHERE vpc_id=?", vpcId)
 	if err != nil {
-		return "outside", fmt.Errorf("failed to access database")
+		return "", fmt.Errorf("failed to access database")
 	}
 	var name string
 	if vpcRows.Next() {
@@ -284,7 +293,7 @@ func filterAllowedApp(user string, vpcId int, appStrList []string) (allowedAppLi
 		var id int
 		id, err = strconv.Atoi(idStr)
 		if err != nil {
-			return
+			continue
 		}
 		appRows := dbClient.QueryRow("SELECT owner,destination_vpc_id,approval_status FROM applications WHERE id=?", id)
 		var owner string
@@ -356,16 +365,34 @@ func inboxServer() error {
 			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
 			return
 		}
+		var warning []string = []string{}
 		dstStr := string(data["dstname"])
-		src, _ := getVpcIdByIp(r.RemoteAddr)
-		dst, _ := getVpcIdByName(dstStr)
-		var warning string = ""
+		src := getVpcIdByIp(r.RemoteAddr)
+		if src == -1 {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
+			return
+		}
+		if src == 0 {
+			warning = append(warning, "Src: choose outside")
+		}
+		dst, err := getVpcIdByName(dstStr)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
+			return
+		}
+		if dst == -1 {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
+			return
+		}
+		if src == 0 {
+			warning = append(warning, "Dst: choose outside")
+		}
 		if dst == src {
 			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Same src and dst.")})
 			return
 		}
 		var sendFileList []utils.AppFile
-		err := json.Unmarshal(data["sendfile"], &sendFileList)
+		err = json.Unmarshal(data["sendfile"], &sendFileList)
 		if err != nil {
 			writeRes(w, http.StatusMisdirectedRequest, map[string][]byte{"error": []byte("Error send file list.")})
 			return
@@ -387,7 +414,8 @@ func inboxServer() error {
 				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Create application error.")})
 				return
 			} else {
-				writeRes(w, http.StatusOK, map[string][]byte{"warning": []byte(warning)})
+				warningBytes, _ := json.Marshal(warning)
+				writeRes(w, http.StatusOK, map[string][]byte{"warning": warningBytes})
 				return
 			}
 		} else {
@@ -433,13 +461,21 @@ func outboxServer() error {
 			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
 			return
 		}
-		vpcId, _ := getVpcIdByIp(r.RemoteAddr)
+		vpcId := getVpcIdByIp(r.RemoteAddr)
+		if vpcId == -1 {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown VPC.")})
+			return
+		}
 		userName, permission, err := getUserInfoByUserAndVpc(vpcId, parseUserFromKey(userKey))
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
 			return
 		}
-		vpcName, _ := getVpcNameById(vpcId)
+		vpcName, err := getVpcNameById(vpcId)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown VPC.")})
+			return
+		}
 		writeRes(w, http.StatusOK, map[string][]byte{
 			"vpc":        []byte(vpcName),
 			"username":   []byte(userName),
@@ -457,7 +493,11 @@ func outboxServer() error {
 			return
 		}
 		user := parseUserFromKey(userKey)
-		vpcId, _ := getVpcIdByIp(r.RemoteAddr)
+		vpcId := getVpcIdByIp(r.RemoteAddr)
+		if vpcId == -1 {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown VPC.")})
+			return
+		}
 		_, permission, err := getUserInfoByUserAndVpc(vpcId, user)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
@@ -471,6 +511,7 @@ func outboxServer() error {
 		}
 		if err != nil {
 			journal.Print(journal.PriErr, "Failed to query application info from database: %v\n", err)
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
 			return
 		}
 		var appList []utils.AppInfo
@@ -478,8 +519,14 @@ func outboxServer() error {
 			var tmpApp utils.AppInfo
 			var srcId, dstId int
 			appRows.Scan(&tmpApp.Id, &tmpApp.User, &srcId, &dstId, &tmpApp.Status)
-			tmpApp.Src, _ = getVpcNameById(srcId)
-			tmpApp.Dst, _ = getVpcNameById(dstId)
+			tmpApp.Src, err = getVpcNameById(srcId)
+			if err != nil {
+				continue
+			}
+			tmpApp.Dst, err = getVpcNameById(dstId)
+			if err != nil {
+				continue
+			}
 			appList = append(appList, tmpApp)
 		}
 		appListBytes, _ := json.Marshal(appList)
@@ -509,16 +556,22 @@ func outboxServer() error {
 				return
 			}
 			if !hasReviewPer(permission) {
-				w.WriteHeader(http.StatusForbidden)
-				w.Write([]byte("User have no permission."))
+				writeRes(w, http.StatusForbidden, map[string][]byte{"error": []byte("User have no permission.")})
 				return
 			}
 		}
-		appFileRow, _ := dbClient.Query("SELECT file_info,file_hash FROM application_file WHERE application_id=?", id)
+		appFileRow, err := dbClient.Query("SELECT file_info,file_hash FROM application_file WHERE application_id=?", id)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
+			return
+		}
 		var appInfo []utils.AppFile
 		for appFileRow.Next() {
 			var tmpInfo utils.AppFile
-			appFileRow.Scan(&tmpInfo.RelPath, &tmpInfo.Hash)
+			err := appFileRow.Scan(&tmpInfo.RelPath, &tmpInfo.Hash)
+			if err != nil {
+				continue
+			}
 			appInfo = append(appInfo, tmpInfo)
 		}
 		appInfoBytes, _ := json.Marshal(appInfo)
@@ -535,7 +588,11 @@ func outboxServer() error {
 			return
 		}
 		user := parseUserFromKey(userKey)
-		vpcId, _ := getVpcIdByIp(r.RemoteAddr)
+		vpcId := getVpcIdByIp(r.RemoteAddr)
+		if vpcId == -1 {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
+			return
+		}
 		var appIdList []string
 		json.Unmarshal(data["appidlist"], &appIdList)
 		allowedAppList, rejectedAppList, err := filterAllowedApp(user, vpcId, appIdList)
@@ -664,7 +721,10 @@ func outboxServer() error {
 		var userList []utils.UserInfo
 		for userRows.Next() {
 			var tmpInfo utils.UserInfo
-			userRows.Scan(&tmpInfo.Name, &tmpInfo.Key, &tmpInfo.Permission)
+			err := userRows.Scan(&tmpInfo.Name, &tmpInfo.Key, &tmpInfo.Permission)
+			if err != nil {
+				continue
+			}
 			userList = append(userList, tmpInfo)
 		}
 		userListBytes, _ := json.Marshal(userList)
@@ -756,7 +816,7 @@ func fileTidy() {
 func main() {
 	loadCerts()
 	connectDb()
-	aliutils.StartStsServer()
+	go aliutils.StartStsServer()
 	go func() {
 		for {
 			err := inboxServer()
