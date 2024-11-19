@@ -13,6 +13,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.67.0
 	github.com/coreos/go-systemd/v22 v22.5.0
 	github.com/spf13/cobra v1.8.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

@@ -32,9 +32,8 @@ var (
 	caPool      = x509.NewCertPool()
 	crtFilePath = "/usr/local/etc/dataPathServer/server.crt"
 	keyFilePath = "/usr/local/etc/dataPathServer/server.key"
-	pubKeys     = []ed25519.PublicKey{}
 	dbClient    *sql.DB
-	ossBucket = "icb-cloud-desktop-test"
+	ossBucket   = "icb-cloud-desktop-test"
 )
 
 func loadCerts() {
@@ -67,27 +66,6 @@ func connectDb() {
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to connect database: %v\n", err)
 		os.Exit(-1)
-	}
-}
-
-func loadPubKeys() {
-	keyCows, err := dbClient.Query("SELECT public_key FROM users")
-	if err != nil {
-		journal.Print(journal.PriErr, "Failed to get pubkey from database: %v\n", err)
-		return
-	}
-	pubKeys = []ed25519.PublicKey{}
-	for keyCows.Next() {
-		var keyStr string
-		keyCows.Scan(&keyStr)
-		pubKeyBytes := []byte(keyStr)
-		block, _ := pem.Decode(pubKeyBytes)
-		tmpKey, err := x509.ParsePKIXPublicKey(block.Bytes)
-		if err != nil {
-			journal.Print(journal.PriErr, "Failed to parse pubkey: %v\n", err)
-			continue
-		}
-		pubKeys = append(pubKeys, tmpKey.(ed25519.PublicKey))
 	}
 }
 
@@ -163,19 +141,31 @@ func updateFileInfo(hash string) error {
 	return err
 }
 
-func checkSign(dataBytes []byte, signature []byte) ed25519.PublicKey {
-	for _, pubKey := range pubKeys {
-		if ok := ed25519.Verify(pubKey, dataBytes, signature); ok {
-			return pubKey
-		}
+func checkSign(dataBytes []byte, userName string, signature []byte) ed25519.PublicKey {
+	keyCows, err := dbClient.Query("SELECT public_key FROM users WHERE user_name=?", userName)
+	if err != nil {
+		journal.Print(journal.PriErr, "Failed to get pubkey from database: %v\n", err)
+		return nil
 	}
-	loadPubKeys()
-	for _, pubKey := range pubKeys {
-		if ok := ed25519.Verify(pubKey, dataBytes, signature); ok {
-			return pubKey
+	if keyCows.Next() {
+		var keyStr string
+		keyCows.Scan(&keyStr)
+		pubKeyBytes := []byte(keyStr)
+		block, _ := pem.Decode(pubKeyBytes)
+		tmpKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			journal.Print(journal.PriErr, "Failed to parse pubkey: %v\n", err)
+			return nil
 		}
+		key := tmpKey.(ed25519.PublicKey)
+		if ed25519.Verify(key, dataBytes, signature) {
+			return key
+		} else {
+			return nil
+		}
+	} else {
+		return nil
 	}
-	return nil
 }
 
 func getVpcIdByIp(addrStr string) (int, error) {
@@ -329,7 +319,8 @@ func parseReq(req *http.Request) (userKey ed25519.PublicKey, data map[string][]b
 	req.ParseMultipartForm(2 << 30)
 	dataBytes, _ := hex.DecodeString(req.PostFormValue("data"))
 	signature, _ := hex.DecodeString(req.PostFormValue("signature"))
-	userKey = checkSign(dataBytes, signature)
+	userName := req.PostFormValue("username")
+	userKey = checkSign(dataBytes, userName, signature)
 	if userKey == nil {
 		data = nil
 		return
@@ -414,6 +405,7 @@ func inboxServer() error {
 				"accesskeysecret": []byte(cred.AccessKeySecret),
 				"securitytoken":   []byte(cred.SecurityToken),
 				"usein":           []byte(useInStr),
+				"ossbucket":       []byte(ossBucket),
 			})
 			return
 		}
@@ -584,6 +576,7 @@ func outboxServer() error {
 			"allowedapplist":  allowedAppListBytes,
 			"rejectedapplist": rejectedAppListBytes,
 			"filelist":        fileListBytes,
+			"ossbucket":       []byte(ossBucket),
 		})
 	})
 	mux.HandleFunc("/review", func(w http.ResponseWriter, r *http.Request) {
@@ -763,7 +756,6 @@ func fileTidy() {
 func main() {
 	loadCerts()
 	connectDb()
-	loadPubKeys()
 	aliutils.StartStsServer()
 	go func() {
 		for {

@@ -31,12 +31,13 @@ var (
 	client        = &http.Client{}
 	loPrivKeyPath = "/usr/local/etc/dataPathClient/privKey"
 	loPrivKey     = ed25519.PrivateKey{}
-	ossBucket     = "icb-cloud-desktop-test"
+	configPath    = "/usr/local/etc/dataPathClient/config.yaml"
+	loUserName    string
 )
 
 func queryUserInfo() map[string]string {
 	host := fmt.Sprintf("https://%v:9991/self", serverHost)
-	res := utils.SendReq(client, host, make(map[string][]byte), &loPrivKey)
+	res := utils.SendReq(client, host, make(map[string][]byte), loUserName, &loPrivKey)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Send request failed http: %v\n", res.StatusCode)
 		os.Exit(-1)
@@ -51,7 +52,7 @@ func queryUserInfo() map[string]string {
 
 func queryAppList() (appList []utils.AppInfo) {
 	host := fmt.Sprintf("https://%v:9991/applist", serverHost)
-	res := utils.SendReq(client, host, map[string][]byte{}, &loPrivKey)
+	res := utils.SendReq(client, host, map[string][]byte{}, loUserName, &loPrivKey)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Send request failed http: %v\n", res.StatusCode)
 		os.Exit(-1)
@@ -63,7 +64,7 @@ func queryAppList() (appList []utils.AppInfo) {
 
 func queryOneAppInfo(id int) (appInfo []utils.AppFile, err error) {
 	host := fmt.Sprintf("https://%v:9991/appinfo", serverHost)
-	res := utils.SendReq(client, host, map[string][]byte{"id": []byte(strconv.Itoa(id))}, &loPrivKey)
+	res := utils.SendReq(client, host, map[string][]byte{"id": []byte(strconv.Itoa(id))}, loUserName, &loPrivKey)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Send request failed http: %v\n", res.StatusCode)
 		return
@@ -92,7 +93,7 @@ func queryAppInfo(idList []int) (appInfo map[int][]utils.AppFile) {
 func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAppList []int) {
 	host := fmt.Sprintf("https://%v:9991/download", serverHost)
 	idListBytes, _ := json.Marshal(idList)
-	res := utils.SendReq(client, host, map[string][]byte{"appidlist": idListBytes}, &loPrivKey)
+	res := utils.SendReq(client, host, map[string][]byte{"appidlist": idListBytes}, loUserName, &loPrivKey)
 	data := utils.ParseRes(res)
 	var fileList map[int][]utils.AppFile
 	json.Unmarshal(data["allowedapplist"], &allowedAppList)
@@ -125,7 +126,7 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 			}
 			defer file.Close()
 			downloader.Download(context.TODO(), file, &s3.GetObjectInput{
-				Bucket: aws.String(ossBucket),
+				Bucket: aws.String(string(data["ossbucket"])),
 				Key:    aws.String(info.Hash),
 			})
 		}
@@ -136,7 +137,7 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 func reviewApp(appIdList []string, status string) map[string]string {
 	host := fmt.Sprintf("https://%v:9991/review", serverHost)
 	appIdListBytes, _ := json.Marshal(appIdList)
-	res := utils.SendReq(client, host, map[string][]byte{"appidlist": appIdListBytes, "status": []byte(status)}, &loPrivKey)
+	res := utils.SendReq(client, host, map[string][]byte{"appidlist": appIdListBytes, "status": []byte(status)}, loUserName, &loPrivKey)
 	data := utils.ParseRes(res)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("http %v: %v", res.StatusCode, string(data["error"]))
@@ -150,7 +151,7 @@ func reviewApp(appIdList []string, status string) map[string]string {
 func listVpc() []utils.VpcInfo {
 	host := fmt.Sprintf("https://%v:9991/listvpc", serverHost)
 	var vpcList []utils.VpcInfo
-	res := utils.SendReq(client, host, map[string][]byte{}, &loPrivKey)
+	res := utils.SendReq(client, host, map[string][]byte{}, loUserName, &loPrivKey)
 	data := utils.ParseRes(res)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("http %v: %v", res.StatusCode, string(data["error"]))
@@ -163,7 +164,7 @@ func listVpc() []utils.VpcInfo {
 func listUserByVpcId(vpcId int) []utils.UserInfo {
 	host := fmt.Sprintf("https://%v:9991/listuser", serverHost)
 	var userList []utils.UserInfo
-	res := utils.SendReq(client, host, map[string][]byte{"vpcid": []byte(strconv.Itoa(vpcId))}, &loPrivKey)
+	res := utils.SendReq(client, host, map[string][]byte{"vpcid": []byte(strconv.Itoa(vpcId))}, loUserName, &loPrivKey)
 	data := utils.ParseRes(res)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("http %v: %v", res.StatusCode, string(data["error"]))
@@ -175,7 +176,7 @@ func listUserByVpcId(vpcId int) []utils.UserInfo {
 
 func authUser(user string, vpcId int, permission int) utils.UserInfo {
 	host := fmt.Sprintf("https://%v:9991/authuser", serverHost)
-	res := utils.SendReq(client, host, map[string][]byte{"user": []byte(user), "vpcid": []byte(strconv.Itoa(vpcId)), "permission": []byte(strconv.Itoa(permission))}, &loPrivKey)
+	res := utils.SendReq(client, host, map[string][]byte{"user": []byte(user), "vpcid": []byte(strconv.Itoa(vpcId)), "permission": []byte(strconv.Itoa(permission))}, loUserName, &loPrivKey)
 	data := utils.ParseRes(res)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("http %v: %v", res.StatusCode, string(data["error"]))
@@ -191,6 +192,7 @@ func startGUI() {
 }
 
 func main() {
+	utils.LoadConfig(configPath, &serverHost, &loUserName)
 	utils.LoadCertsAndKeys(caPoolPath, caPool, loPrivKeyPath, &loPrivKey)
 	utils.LoadHttpClient(crtFilePath, keyFilePath, client, caPool, 9993)
 	var jsonFlag bool

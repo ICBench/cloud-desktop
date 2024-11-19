@@ -29,10 +29,11 @@ var (
 	crtFilePath   = "/usr/local/etc/dataPathClient/certs/client.crt"
 	keyFilePath   = "/usr/local/etc/dataPathClient/certs/client.key"
 	loPrivKeyPath = "/usr/local/etc/dataPathClient/privKey"
-	ossBucket     = "icb-cloud-desktop-test"
 	client        = &http.Client{}
 	loPrivKey     = ed25519.PrivateKey{}
 	retryTime     = 10
+	configPath    = "/usr/local/etc/dataPathClient/config.yaml"
+	loUserName    string
 )
 
 func sendApplication(host string, sendFileList []utils.AppFile, dst string) *http.Response {
@@ -42,7 +43,7 @@ func sendApplication(host string, sendFileList []utils.AppFile, dst string) *htt
 		log.Printf("Marshal application failed: %v\n", err)
 		return nil
 	}
-	return utils.SendReq(client, host, map[string][]byte{"sendfile": jsonData, "dstname": []byte(dst)}, &loPrivKey)
+	return utils.SendReq(client, host, map[string][]byte{"sendfile": jsonData, "dstname": []byte(dst)}, loUserName, &loPrivKey)
 }
 
 func inbox(filePaths []string, dst string) {
@@ -102,7 +103,7 @@ func inbox(filePaths []string, dst string) {
 				}
 				defer file.Close()
 				uploader.Upload(context.TODO(), &s3.PutObjectInput{
-					Bucket: aws.String(ossBucket),
+					Bucket: aws.String(string(data["ossbucket"])),
 					Key:    aws.String(needFile),
 					Body:   file,
 				})
@@ -124,6 +125,7 @@ func inbox(filePaths []string, dst string) {
 }
 
 func main() {
+	utils.LoadConfig(configPath, &serverHost, &loUserName)
 	utils.LoadCertsAndKeys(caPoolPath, caPool, loPrivKeyPath, &loPrivKey)
 	utils.LoadHttpClient(crtFilePath, keyFilePath, client, caPool, 9992)
 	var dst string

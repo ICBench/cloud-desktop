@@ -24,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -108,7 +109,7 @@ func LoadHttpClient(crtFilePath string, keyFilePath string, client *http.Client,
 	}
 }
 
-func SendReq(client *http.Client, host string, data map[string][]byte, loPrivKey *ed25519.PrivateKey) *http.Response {
+func SendReq(client *http.Client, host string, data map[string][]byte, userName string, loPrivKey *ed25519.PrivateKey) *http.Response {
 	var buf bytes.Buffer
 	bufWriter := multipart.NewWriter(&buf)
 	jsonData := make(map[string]string)
@@ -120,6 +121,7 @@ func SendReq(client *http.Client, host string, data map[string][]byte, loPrivKey
 	jsonData["salt"] = hex.EncodeToString(saltData)
 	jsonBytes, _ := json.Marshal(jsonData)
 	signature := ed25519.Sign(*loPrivKey, jsonBytes)
+	bufWriter.WriteField("username", userName)
 	bufWriter.WriteField("data", hex.EncodeToString(jsonBytes))
 	bufWriter.WriteField("signature", hex.EncodeToString(signature))
 	bufWriter.Close()
@@ -166,4 +168,23 @@ func InetAtoN(ipStr string) uint {
 	ip := net.ParseIP(ipStr)
 	tmp := big.NewInt(0).SetBytes(ip.To4())
 	return uint(tmp.Int64())
+}
+
+func LoadConfig(configPath string, serverHost *string, loUserName *string) {
+	configFile, err := os.Open(configPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Println("Failed to access the config file.")
+		}
+		return
+	}
+	configBytes, _ := io.ReadAll(configFile)
+	config := make(map[string]interface{})
+	yaml.Unmarshal(configBytes, config)
+	if ifce, exist := config["host"]; exist {
+		*serverHost = ifce.(string)
+	}
+	if ifce, exist := config["username"]; exist {
+		*loUserName = ifce.(string)
+	}
 }
