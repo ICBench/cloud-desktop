@@ -30,12 +30,13 @@ import (
 )
 
 var (
+	configPath  = "/usr/local/etc/dataPathServer/config.yaml"
 	caPoolPath  = "/usr/local/etc/dataPathServer/CApool"
+	crtFilePath = "/usr/local/etc/dataPathServer/cert/server.crt"
+	keyFilePath = "/usr/local/etc/dataPathServer/cert/server.key"
 	caPool      = x509.NewCertPool()
-	crtFilePath = "/usr/local/etc/dataPathServer/server.crt"
-	keyFilePath = "/usr/local/etc/dataPathServer/server.key"
 	dbClient    *sql.DB
-	ossBucket   = "icb-cloud-desktop-test"
+	ossBucket   string
 )
 
 func loadCerts() {
@@ -814,6 +815,9 @@ func fileTidy() {
 }
 
 func main() {
+	utils.LoadConfig(configPath, map[string]*string{
+		"ossbucket": &ossBucket,
+	})
 	loadCerts()
 	connectDb()
 	go aliutils.StartStsServer()

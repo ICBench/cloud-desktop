@@ -23,21 +23,21 @@ import (
 )
 
 var (
-	serverHost    = "106.15.236.65"
+	loUserName    string
+	serverHost    string
+	configPath    = "/usr/local/etc/dataPathClient/config.yaml"
 	caPoolPath    = "/usr/local/etc/dataPathClient/CApool"
-	caPool        = x509.NewCertPool()
-	crtFilePath   = "/usr/local/etc/dataPathClient/certs/client.crt"
-	keyFilePath   = "/usr/local/etc/dataPathClient/certs/client.key"
+	crtFilePath   = "/usr/local/etc/dataPathClient/cert/client.crt"
+	keyFilePath   = "/usr/local/etc/dataPathClient/cert/client.key"
 	loPrivKeyPath = "/usr/local/etc/dataPathClient/privKey"
+	caPool        = x509.NewCertPool()
 	client        = &http.Client{}
 	loPrivKey     = ed25519.PrivateKey{}
 	retryTime     = 10
-	configPath    = "/usr/local/etc/dataPathClient/config.yaml"
-	loUserName    string
 )
 
-func sendApplication(host string, sendFileList []utils.AppFile, dst string) *http.Response {
-	host = host + "apply"
+func sendApplication(sendFileList []utils.AppFile, dst string) *http.Response {
+	host := fmt.Sprintf("https://%v:9990/apply", serverHost)
 	jsonData, err := json.Marshal(sendFileList)
 	if err != nil {
 		log.Printf("Marshal application failed: %v\n", err)
@@ -47,7 +47,6 @@ func sendApplication(host string, sendFileList []utils.AppFile, dst string) *htt
 }
 
 func inbox(filePaths []string, dst string) {
-	host := fmt.Sprintf("https://%v:9990/", serverHost)
 	var sendFileList []utils.AppFile
 	filePathTmp := make(map[string]string)
 	listSize := 0
@@ -80,7 +79,7 @@ func inbox(filePaths []string, dst string) {
 		os.Exit(-1)
 	}
 	for range retryTime {
-		res := sendApplication(host, sendFileList, dst)
+		res := sendApplication(sendFileList, dst)
 		if res == nil {
 			return
 		}
@@ -130,7 +129,10 @@ func inbox(filePaths []string, dst string) {
 }
 
 func main() {
-	utils.LoadConfig(configPath, &serverHost, &loUserName)
+	utils.LoadConfig(configPath, map[string]*string{
+		"username": &loUserName,
+		"host":     &serverHost,
+	})
 	utils.LoadCertsAndKeys(caPoolPath, caPool, loPrivKeyPath, &loPrivKey)
 	utils.LoadHttpClient(crtFilePath, keyFilePath, client, caPool, 9992)
 	var dst string

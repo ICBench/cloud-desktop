@@ -24,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/coreos/go-systemd/v22/journal"
 	"gopkg.in/yaml.v3"
 )
 
@@ -171,21 +172,29 @@ func InetAtoN(ipStr string) uint {
 	return uint(tmp.Int64())
 }
 
-func LoadConfig(configPath string, serverHost *string, loUserName *string) {
-	configFile, err := os.Open(configPath)
+func LoadConfig(confPath string, confList map[string]*string) {
+	configFile, err := os.Open(confPath)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Println("Failed to access the config file.")
-		}
-		return
+		journal.Print(journal.PriErr, "Failed to access the config file: %v.", err)
+		os.Exit(-1)
 	}
-	configBytes, _ := io.ReadAll(configFile)
+	configBytes, err := io.ReadAll(configFile)
+	if err != nil {
+		journal.Print(journal.PriErr, "Failed to read the config file: %v.", err)
+		os.Exit(-1)
+	}
 	config := make(map[string]interface{})
-	yaml.Unmarshal(configBytes, config)
-	if ifce, exist := config["host"]; exist {
-		*serverHost = ifce.(string)
+	err = yaml.Unmarshal(configBytes, config)
+	if err != nil {
+		journal.Print(journal.PriErr, "Failed to parse the config file: %v.", err)
+		os.Exit(-1)
 	}
-	if ifce, exist := config["username"]; exist {
-		*loUserName = ifce.(string)
+	for name, value := range confList {
+		ifce, exist := config[name]
+		if !exist {
+			journal.Print(journal.PriErr, "Config file invalid: missing %v", name)
+			os.Exit(-1)
+		}
+		*value = ifce.(string)
 	}
 }

@@ -23,16 +23,16 @@ import (
 )
 
 var (
-	serverHost    = "106.15.236.65"
-	caPoolPath    = "/usr/local/etc/dataPathClient/CApool"
-	caPool        = x509.NewCertPool()
-	crtFilePath   = "/usr/local/etc/dataPathClient/certs/client.crt"
-	keyFilePath   = "/usr/local/etc/dataPathClient/certs/client.key"
-	client        = &http.Client{}
-	loPrivKeyPath = "/usr/local/etc/dataPathClient/privKey"
-	loPrivKey     = ed25519.PrivateKey{}
-	configPath    = "/usr/local/etc/dataPathClient/config.yaml"
 	loUserName    string
+	serverHost    string
+	configPath    = "/usr/local/etc/dataPathClient/config.yaml"
+	caPoolPath    = "/usr/local/etc/dataPathClient/CApool"
+	crtFilePath   = "/usr/local/etc/dataPathClient/cert/client.crt"
+	keyFilePath   = "/usr/local/etc/dataPathClient/cert/client.key"
+	loPrivKeyPath = "/usr/local/etc/dataPathClient/privKey"
+	caPool        = x509.NewCertPool()
+	loPrivKey     = ed25519.PrivateKey{}
+	client        = &http.Client{}
 )
 
 func queryUserInfo() map[string]string {
@@ -192,7 +192,10 @@ func startGUI() {
 }
 
 func main() {
-	utils.LoadConfig(configPath, &serverHost, &loUserName)
+	utils.LoadConfig(configPath, map[string]*string{
+		"username": &loUserName,
+		"host":     &serverHost,
+	})
 	utils.LoadCertsAndKeys(caPoolPath, caPool, loPrivKeyPath, &loPrivKey)
 	utils.LoadHttpClient(crtFilePath, keyFilePath, client, caPool, 9993)
 	var jsonFlag bool
