@@ -10,7 +10,6 @@ import (
 	"datapath/utils"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -161,13 +160,8 @@ func checkSign(dataBytes []byte, userName string, signature []byte) ed25519.Publ
 	if keyCows.Next() {
 		var keyStr string
 		keyCows.Scan(&keyStr)
-		pubKeyBytes := []byte(keyStr)
-		block, _ := pem.Decode(pubKeyBytes)
-		tmpKey, err := x509.ParsePKIXPublicKey(block.Bytes)
-		if err != nil {
-			return nil
-		}
-		key := tmpKey.(ed25519.PublicKey)
+		pubKeyBytes, _ := hex.DecodeString(keyStr)
+		key := ed25519.PublicKey(pubKeyBytes)
 		if ed25519.Verify(key, dataBytes, signature) {
 			return key
 		} else {
@@ -230,12 +224,7 @@ func isOutside(vpcId int) bool {
 }
 
 func parseUserFromKey(userKey ed25519.PublicKey) (user string) {
-	pubKeyBytes, err := x509.MarshalPKIXPublicKey(userKey)
-	if err != nil {
-		user = ""
-		return
-	}
-	user = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubKeyBytes}))
+	user = hex.EncodeToString(userKey)
 	return
 }
 
