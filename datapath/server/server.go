@@ -385,7 +385,7 @@ func inboxServer() error {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
 			return
 		}
-		if src == 0 {
+		if dst == 0 {
 			warning = append(warning, "Dst: choose outside")
 		}
 		if dst == src {

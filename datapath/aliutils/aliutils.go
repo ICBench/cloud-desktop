@@ -69,7 +69,7 @@ func (p policy) ToString() string {
 	return string(jsonBytes)
 }
 
-func loadStsClient(stsClient *sts.Client) {
+func loadStsClient(stsClient **sts.Client) {
 	stsClientMu.Lock()
 	defer stsClientMu.Unlock()
 	for i := 1; i <= stsClientRetryTime; i++ {
@@ -82,7 +82,7 @@ func loadStsClient(stsClient *sts.Client) {
 		if err != nil {
 			continue
 		}
-		stsClient, err = sts.NewClient(&client.Config{
+		*stsClient, err = sts.NewClient(&client.Config{
 			AccessKeyId:     t.AccessKeyId,
 			AccessKeySecret: t.AccessKeySecret,
 			SecurityToken:   t.SecurityToken,
@@ -100,10 +100,10 @@ func loadStsClient(stsClient *sts.Client) {
 func StartStsServer() {
 	minStsReqIntvl := time.Second / time.Duration(maxReqTimesPerSec)
 	var stsClient *sts.Client
-	loadStsClient(stsClient)
+	loadStsClient(&stsClient)
 	go func() {
 		for {
-			loadStsClient(stsClient)
+			loadStsClient(&stsClient)
 			time.Sleep(maxStsClientTime)
 		}
 	}()
