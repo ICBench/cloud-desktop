@@ -138,23 +138,32 @@ func SendReq(client *http.Client, host string, data map[string][]byte, userName 
 }
 
 func ParseRes(res *http.Response) (data map[string][]byte) {
-	data = map[string][]byte{}
+	data = make(map[string][]byte)
 	jsonData := make(map[string]string)
 	jsonBytes, err := io.ReadAll(res.Body)
 	if err != nil {
 		log.Printf("Failed to parse response: %v\n", err)
 		os.Exit(-1)
 	}
-	json.Unmarshal(jsonBytes, &jsonData)
+	err = json.Unmarshal(jsonBytes, &jsonData)
+	if err != nil {
+		return
+	}
 	for fieldName, fieldValue := range jsonData {
-		data[fieldName], _ = hex.DecodeString(fieldValue)
+		data[fieldName], err = hex.DecodeString(fieldValue)
+		if err != nil {
+			continue
+		}
 	}
 	return
 }
 
 func NewOssClient(accessKeyId, accessKeySecret, securityToken string, useIn bool) *s3.Client {
 	creds := credentials.NewStaticCredentialsProvider(accessKeyId, accessKeySecret, securityToken)
-	cfg, _ := config.LoadDefaultConfig(context.TODO(), config.WithCredentialsProvider(creds))
+	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithCredentialsProvider(creds))
+	if err != nil {
+		return nil
+	}
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		if useIn {
 			o.BaseEndpoint = aws.String("https://s3.oss-cn-shanghai-internal.aliyuncs.com")

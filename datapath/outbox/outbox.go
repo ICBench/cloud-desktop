@@ -104,6 +104,10 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 	accessKeySecret := string(data["accesskeysecret"])
 	securityToken := string(data["securitytoken"])
 	ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, useIn)
+	if ossClient == nil {
+		log.Println("Failed to create oss client.")
+		os.Exit(-1)
+	}
 	downloader := manager.NewDownloader(ossClient)
 	for id, app := range fileList {
 		appSavePath := basePath + strconv.Itoa(id) + "/"

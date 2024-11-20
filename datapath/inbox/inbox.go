@@ -93,6 +93,10 @@ func inbox(filePaths []string, dst string) {
 			accessKeySecret := string(data["accesskeysecret"])
 			securityToken := string(data["securitytoken"])
 			ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, useIn)
+			if ossClient == nil {
+				log.Println("Failed to create oss client.")
+				os.Exit(-1)
+			}
 			uploader := manager.NewUploader(ossClient)
 			for _, needFile := range needFileList {
 				path := filePathTmp[needFile]

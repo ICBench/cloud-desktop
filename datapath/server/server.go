@@ -160,7 +160,11 @@ func checkSign(dataBytes []byte, userName string, signature []byte) ed25519.Publ
 	if keyCows.Next() {
 		var keyStr string
 		keyCows.Scan(&keyStr)
-		pubKeyBytes, _ := hex.DecodeString(keyStr)
+		pubKeyBytes, err := hex.DecodeString(keyStr)
+		if err != nil {
+			journal.Print(journal.PriErr, "Database value error")
+			return nil
+		}
 		key := ed25519.PublicKey(pubKeyBytes)
 		if ed25519.Verify(key, dataBytes, signature) {
 			return key
@@ -245,11 +249,17 @@ func getUserInfoByUserAndVpc(vpcId int, user string) (userName string, permissio
 }
 
 func reviewApp(idStr string, userKey ed25519.PublicKey, statusStr string) error {
-	id, _ := strconv.Atoi(idStr)
-	status, _ := strconv.Atoi(statusStr)
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		return err
+	}
+	status, err := strconv.Atoi(statusStr)
+	if err != nil {
+		return err
+	}
 	appRows := dbClient.QueryRow("SELECT destination_vpc_id FROM applications WHERE id=?", id)
 	var dstVpcId int
-	err := appRows.Scan(&dstVpcId)
+	err = appRows.Scan(&dstVpcId)
 	if err != nil {
 		return fmt.Errorf("no application %v", idStr)
 	}
@@ -314,23 +324,34 @@ func filterAllowedApp(user string, vpcId int, appStrList []string) (allowedAppLi
 	return
 }
 
-func parseReq(req *http.Request) (userKey ed25519.PublicKey, data map[string][]byte) {
+func parseReq(req *http.Request) (ed25519.PublicKey, map[string][]byte) {
 	req.ParseMultipartForm(2 << 30)
-	dataBytes, _ := hex.DecodeString(req.PostFormValue("data"))
-	signature, _ := hex.DecodeString(req.PostFormValue("signature"))
+	dataBytes, err := hex.DecodeString(req.PostFormValue("data"))
+	if err != nil {
+		return nil, nil
+	}
+	signature, err := hex.DecodeString(req.PostFormValue("signature"))
+	if err != nil {
+		return nil, nil
+	}
 	userName := req.PostFormValue("username")
-	userKey = checkSign(dataBytes, userName, signature)
+	userKey := checkSign(dataBytes, userName, signature)
 	if userKey == nil {
-		data = nil
-		return
+		return nil, nil
 	}
 	jsonData := make(map[string]string)
-	data = make(map[string][]byte)
-	json.Unmarshal(dataBytes, &jsonData)
-	for fieldName, fieldValue := range jsonData {
-		data[fieldName], _ = hex.DecodeString(fieldValue)
+	data := make(map[string][]byte)
+	err = json.Unmarshal(dataBytes, &jsonData)
+	if err != nil {
+		return nil, nil
 	}
-	return
+	for fieldName, fieldValue := range jsonData {
+		data[fieldName], err = hex.DecodeString(fieldValue)
+		if err != nil {
+			continue
+		}
+	}
+	return userKey, data
 }
 
 func writeRes(res http.ResponseWriter, statusCode int, data map[string][]byte) {
@@ -388,8 +409,12 @@ func inboxServer() error {
 			return
 		}
 		cred := aliutils.GetStsCred("", []string{}, ossBucket)
-		client := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, true)
-		needFileList, err := checkFileExist(client, sendFileList)
+		ossClient := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, true)
+		if ossClient == nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access oss server.")})
+			return
+		}
+		needFileList, err := checkFileExist(ossClient, sendFileList)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access file info.")})
 			return
@@ -533,7 +558,11 @@ func outboxServer() error {
 			return
 		}
 		idStr := string(data["id"])
-		id, _ := strconv.Atoi(idStr)
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Invalid application id.")})
+			return
+		}
 		user := parseUserFromKey(userKey)
 		appRows := dbClient.QueryRow("SELECT owner,destination_vpc_id FROM applications WHERE id=?", id)
 		var owner string
@@ -584,7 +613,11 @@ func outboxServer() error {
 			return
 		}
 		var appIdList []string
-		json.Unmarshal(data["appidlist"], &appIdList)
+		err := json.Unmarshal(data["appidlist"], &appIdList)
+		if err != nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Invalid application list.")})
+			return
+		}
 		allowedAppList, rejectedAppList, err := filterAllowedApp(user, vpcId, appIdList)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte(err.Error())})
@@ -639,7 +672,11 @@ func outboxServer() error {
 		var appIdList []string
 		appIdListBytes := data["appidlist"]
 		status := string(data["status"])
-		json.Unmarshal(appIdListBytes, &appIdList)
+		err := json.Unmarshal(appIdListBytes, &appIdList)
+		if err != nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Invalid application list.")})
+			return
+		}
 		reviewStat := make(map[string]string)
 		for _, id := range appIdList {
 			err := reviewApp(id, userKey, status)
@@ -693,7 +730,11 @@ func outboxServer() error {
 			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
 			return
 		}
-		vpcId, _ := strconv.Atoi(string(data["vpcid"]))
+		vpcId, err := strconv.Atoi(string(data["vpcid"]))
+		if err != nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Invalid VPC id.")})
+			return
+		}
 		_, permission, err := getUserInfoByUserAndVpc(vpcId, parseUserFromKey(userKey))
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
@@ -730,7 +771,11 @@ func outboxServer() error {
 			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
 			return
 		}
-		vpcId, _ := strconv.Atoi(string(data["vpcid"]))
+		vpcId, err := strconv.Atoi(string(data["vpcid"]))
+		if err != nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Invalid VPC id.")})
+			return
+		}
 		_, permission, err := getUserInfoByUserAndVpc(vpcId, parseUserFromKey(userKey))
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
@@ -748,7 +793,11 @@ func outboxServer() error {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("User not found.")})
 			return
 		}
-		targetPer, _ := strconv.Atoi(string(data["permission"]))
+		targetPer, err := strconv.Atoi(string(data["permission"]))
+		if err != nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Invalid permission setting.")})
+			return
+		}
 		_, err = dbClient.Exec("INSERT INTO vpc_user (vpc_id,user_key,permission) VALUES (?,?,?) ON DUPLICATE KEY UPDATE permission=?", vpcId, targetUser, targetPer, targetPer)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
@@ -796,9 +845,13 @@ func fileTidy() {
 		dbClient.Exec("DELETE FROM applications WHERE id = ?", req)
 	}
 	cred := aliutils.GetStsCred("", []string{}, ossBucket)
-	client := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, true)
+	ossClient := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, true)
+	if ossClient == nil {
+		journal.Print(journal.PriErr, "File tidy error: failed to create oss client.")
+		return
+	}
 	for file := range delFileList {
-		client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{Bucket: aws.String(ossBucket), Key: aws.String(file)})
+		ossClient.DeleteObject(context.TODO(), &s3.DeleteObjectInput{Bucket: aws.String(ossBucket), Key: aws.String(file)})
 		dbClient.Exec("DELETE FROM files WHERE hash = ?", file)
 	}
 }
