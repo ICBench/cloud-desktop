@@ -508,41 +508,44 @@ func outboxServer() error {
 			return
 		}
 		user := parseUserFromKey(userKey)
-		vpcId := getVpcIdByIp(r.RemoteAddr)
-		if vpcId == -1 {
-			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown VPC.")})
-			return
-		}
-		_, permission, err := getUserInfoByUserAndVpc(vpcId, user)
+		perRow, err := dbClient.Query("SELECT vpc_id,permission FROM vpc_user WHERE user_key=?", user)
 		if err != nil {
-			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Unknown user.")})
-			return
-		}
-		var appRows *sql.Rows
-		if hasReviewPer(permission) {
-			appRows, err = dbClient.Query("select applications.id,users.user_name,applications.source_vpc_id,applications.destination_vpc_id,applications.approval_status from applications inner join users on applications.owner=users.public_key WHERE applications.source_vpc_id=?", vpcId)
-		} else {
-			appRows, err = dbClient.Query("select applications.id,users.user_name,applications.source_vpc_id,applications.destination_vpc_id,applications.approval_status from applications inner join users on applications.owner=users.public_key WHERE applications.owner=?", user)
-		}
-		if err != nil {
-			journal.Print(journal.PriErr, "Failed to query application info from database: %v\n", err)
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
 			return
 		}
 		var appList []utils.AppInfo
-		for appRows.Next() {
-			var tmpApp utils.AppInfo
-			var srcId, dstId int
-			appRows.Scan(&tmpApp.Id, &tmpApp.User, &srcId, &dstId, &tmpApp.Status)
-			tmpApp.Src, err = getVpcNameById(srcId)
+		for perRow.Next() {
+			var vpcId, permission int
+			err := perRow.Scan(&vpcId, &permission)
 			if err != nil {
-				continue
+				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
+				return
 			}
-			tmpApp.Dst, err = getVpcNameById(dstId)
+			var appRows *sql.Rows
+			if hasReviewPer(permission) {
+				appRows, err = dbClient.Query("SELECT applications.id,users.user_name,applications.source_vpc_id,applications.destination_vpc_id,applications.approval_status FROM applications INNER JOIN users ON applications.owner=users.public_key WHERE applications.source_vpc_id=?", vpcId)
+			} else {
+				appRows, err = dbClient.Query("SELECT applications.id,users.user_name,applications.source_vpc_id,applications.destination_vpc_id,applications.approval_status FROM applications INNER JOIN users ON applications.owner=users.public_key WHERE applications.source_vpc_id=? AND applications.owner=?", vpcId, user)
+			}
 			if err != nil {
-				continue
+				journal.Print(journal.PriErr, "Failed to query application info from database: %v\n", err)
+				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
+				return
 			}
-			appList = append(appList, tmpApp)
+			for appRows.Next() {
+				var tmpApp utils.AppInfo
+				var srcId, dstId int
+				appRows.Scan(&tmpApp.Id, &tmpApp.User, &srcId, &dstId, &tmpApp.Status)
+				tmpApp.Src, err = getVpcNameById(srcId)
+				if err != nil {
+					continue
+				}
+				tmpApp.Dst, err = getVpcNameById(dstId)
+				if err != nil {
+					continue
+				}
+				appList = append(appList, tmpApp)
+			}
 		}
 		appListBytes, _ := json.Marshal(appList)
 		writeRes(w, http.StatusOK, map[string][]byte{"applist": appListBytes})
