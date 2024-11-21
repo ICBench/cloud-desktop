@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 )
 
@@ -90,6 +92,16 @@ func queryAppInfo(idList []int) (appInfo map[int][]utils.AppFile) {
 	return
 }
 
+type multiWriterAt struct {
+	writeAtBuf io.WriterAt
+	writeBuf   io.Writer
+}
+
+func (b multiWriterAt) WriteAt(p []byte, off int64) (n int, err error) {
+	b.writeBuf.Write(p)
+	return b.writeAtBuf.WriteAt(p, off)
+}
+
 func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAppList []int) {
 	host := fmt.Sprintf("https://%v:9991/download", serverHost)
 	idListBytes, _ := json.Marshal(idList)
@@ -129,10 +141,27 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 				os.Exit(-1)
 			}
 			defer file.Close()
-			downloader.Download(context.TODO(), file, &s3.GetObjectInput{
+			header, err := ossClient.HeadObject(context.TODO(), &s3.HeadObjectInput{
 				Bucket: aws.String(string(data["ossbucket"])),
 				Key:    aws.String(info.Hash),
 			})
+			if err != nil {
+				log.Printf("Failed to get file info: %v\n", file.Name())
+				continue
+			}
+			bar := progressbar.DefaultBytes(
+				aws.ToInt64(header.ContentLength),
+				fmt.Sprintf("Downloading %v", file.Name()),
+			)
+			buf := multiWriterAt{file, bar}
+			_, err = downloader.Download(context.TODO(), buf, &s3.GetObjectInput{
+				Bucket: aws.String(string(data["ossbucket"])),
+				Key:    aws.String(info.Hash),
+			})
+			if err != nil {
+				log.Printf("Failed to download file: %v\n", file.Name())
+			}
+			fmt.Println()
 		}
 	}
 	return

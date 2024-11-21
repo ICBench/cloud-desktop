@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 )
 
@@ -106,11 +108,20 @@ func inbox(filePaths []string, dst string) {
 					continue
 				}
 				defer file.Close()
-				uploader.Upload(context.TODO(), &s3.PutObjectInput{
+				stat, _ := file.Stat()
+				bar := progressbar.DefaultBytes(
+					stat.Size(),
+					fmt.Sprintf("Uploading %v", stat.Name()),
+				)
+				_, err = uploader.Upload(context.TODO(), &s3.PutObjectInput{
 					Bucket: aws.String(string(data["ossbucket"])),
 					Key:    aws.String(needFile),
-					Body:   file,
+					Body:   io.TeeReader(file, bar),
 				})
+				if err != nil {
+					log.Printf("Failed to upload file: %v\n", stat.Name())
+				}
+				fmt.Println()
 			}
 		case http.StatusOK:
 			var warning []string
