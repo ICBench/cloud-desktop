@@ -842,7 +842,11 @@ func fileTidy() {
 		}
 	}
 	for req := range delReqList {
-		dbClient.Exec("DELETE FROM applications WHERE id = ?", req)
+		_, err := dbClient.Exec("DELETE FROM applications WHERE id = ?", req)
+		if err != nil {
+			journal.Print(journal.PriErr, "File tidy error: failed to access database.")
+			continue
+		}
 	}
 	cred := aliutils.GetStsCred("", []string{}, ossBucket)
 	ossClient := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, true)
@@ -852,7 +856,11 @@ func fileTidy() {
 	}
 	for file := range delFileList {
 		ossClient.DeleteObject(context.TODO(), &s3.DeleteObjectInput{Bucket: aws.String(ossBucket), Key: aws.String(file)})
-		dbClient.Exec("DELETE FROM files WHERE hash = ?", file)
+		_, err := dbClient.Exec("DELETE FROM files WHERE hash = ?", file)
+		if err != nil {
+			journal.Print(journal.PriErr, "File tidy error: failed to access database.")
+			continue
+		}
 	}
 }
 
