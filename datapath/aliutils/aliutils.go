@@ -8,6 +8,7 @@ import (
 
 	"github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	sts "github.com/alibabacloud-go/sts-20150401/v2/client"
+	"github.com/alibabacloud-go/tea/tea"
 	stscredentials "github.com/aliyun/credentials-go/credentials"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/coreos/go-systemd/v22/journal"
@@ -24,14 +25,13 @@ const (
 )
 
 var (
-	maxReqTimesPerSec  = 50
-	reqChan            = make(chan stsReq, 1000)
-	maxStsClientTime   = 50 * time.Minute
-	credMap            sync.Map
-	aliStsRole         = "acs:ram::1450424585376992:role/cloud-desktop-test-oss"
-	aliSessionName     = "cloud-desktop-test"
-	stsClientMu        sync.Mutex
-	stsClientRetryTime = 10
+	maxReqTimesPerSec   = 50
+	reqChan             = make(chan stsReq, 1000)
+	credMap             sync.Map
+	aliStsRole          = "acs:ram::1450424585376992:role/cloud-desktop-test-oss"
+	aliSessionName      = "cloud-desktop-test"
+	stsClientRetryTime  = 10
+	assumeRoleRetryTime = 3
 )
 
 type stsReq struct {
@@ -70,16 +70,16 @@ func (p policy) ToString() string {
 }
 
 func loadStsClient(stsClient **sts.Client) {
-	stsClientMu.Lock()
-	defer stsClientMu.Unlock()
+	stsConf := new(stscredentials.Config).SetType("ecs_ram_role").SetRoleName("cloud-desktop-test-server")
+	stsCredProvider, err := stscredentials.NewCredential(stsConf)
+	if err != nil {
+		journal.Print(journal.PriErr, "Failed to create sts client, check RAM role setting")
+		os.Exit(-1)
+	}
 	for i := 1; i <= stsClientRetryTime; i++ {
-		stsConf := new(stscredentials.Config).SetType("ecs_ram_role")
-		stsCredProvider, err := stscredentials.NewCredential(stsConf)
-		if err != nil {
-			continue
-		}
 		t, err := stsCredProvider.GetCredential()
 		if err != nil {
+			time.Sleep(1 * time.Second)
 			continue
 		}
 		*stsClient, err = sts.NewClient(&client.Config{
@@ -91,7 +91,6 @@ func loadStsClient(stsClient **sts.Client) {
 		if err == nil {
 			return
 		}
-		time.Sleep(1 * time.Second)
 	}
 	journal.Print(journal.PriErr, "Failed to create sts client, check RAM role setting")
 	os.Exit(-1)
@@ -101,22 +100,28 @@ func StartStsServer() {
 	minStsReqIntvl := time.Second / time.Duration(maxReqTimesPerSec)
 	var stsClient *sts.Client
 	loadStsClient(&stsClient)
-	go func() {
-		for {
-			loadStsClient(&stsClient)
-			time.Sleep(maxStsClientTime)
-		}
-	}()
 	for {
 		req := <-reqChan
-		stsClientMu.Lock()
-		res, _ := stsClient.AssumeRole(&sts.AssumeRoleRequest{
-			RoleArn:         aws.String(aliStsRole),
-			RoleSessionName: aws.String(aliSessionName),
-			DurationSeconds: aws.Int64(900),
-			Policy:          aws.String(newPolicy(req.action, req.resource).ToString()),
-		})
-		stsClientMu.Unlock()
+		var res *sts.AssumeRoleResponse
+		var err error
+		for range assumeRoleRetryTime {
+			res, err = stsClient.AssumeRole(&sts.AssumeRoleRequest{
+				RoleArn:         aws.String(aliStsRole),
+				RoleSessionName: aws.String(aliSessionName),
+				DurationSeconds: aws.Int64(900),
+				Policy:          aws.String(newPolicy(req.action, req.resource).ToString()),
+			})
+			if err != nil {
+				if sdkErr, ok := err.(*tea.SDKError); ok && aws.ToString(sdkErr.Code) == "InvalidSecurityToken.Expired" {
+					loadStsClient(&stsClient)
+				} else {
+					journal.Print(journal.PriErr, "Unknown sts error: %v", err)
+					os.Exit(-1)
+				}
+			} else {
+				break
+			}
+		}
 		expTime, _ := time.Parse(time.RFC3339, aws.ToString(res.Body.Credentials.Expiration))
 		cred := StsCred{
 			AccessKeyId:     aws.ToString(res.Body.Credentials.AccessKeyId),
