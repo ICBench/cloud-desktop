@@ -30,7 +30,7 @@ var (
 	credMap             sync.Map
 	aliStsRole          = "acs:ram::1450424585376992:role/cloud-desktop-test-oss"
 	aliSessionName      = "cloud-desktop-test"
-	stsClientRetryTime  = 10
+	stsClientRetryTime  = 7
 	assumeRoleRetryTime = 3
 )
 
@@ -79,7 +79,7 @@ func loadStsClient(stsClient **sts.Client) {
 	for i := 1; i <= stsClientRetryTime; i++ {
 		t, err := stsCredProvider.GetCredential()
 		if err != nil {
-			time.Sleep(1 * time.Second)
+			time.Sleep((1 << (i - 1)) * time.Second)
 			continue
 		}
 		*stsClient, err = sts.NewClient(&client.Config{
