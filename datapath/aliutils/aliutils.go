@@ -2,8 +2,8 @@ package aliutils
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/rand"
-	"os"
 	"sync"
 	"time"
 
@@ -29,10 +29,12 @@ var (
 	maxReqTimesPerSec = 50
 	reqChan           = make(chan stsReq, 1000)
 	credMap           sync.Map
-	aliStsRole        = "acs:ram::1450424585376992:role/cloud-desktop-test-oss"
+	aliStsRole        = "acs:ram::1450424585376992:role/cloud-desktop-test-server"
+	aliOssRole        = "acs:ram::1450424585376992:role/cloud-desktop-test-oss"
 	aliSessionName    = "cloud-desktop-test"
 	maxRetryTimes     = 10
 	maxRetrySec       = 60
+	iniRetrySec       = 1
 )
 
 type stsReq struct {
@@ -45,6 +47,7 @@ type StsCred struct {
 	AccessKeySecret string
 	SecurityToken   string
 	ExpTime         time.Time
+	Err             error
 }
 
 type state struct {
@@ -70,22 +73,21 @@ func (p policy) ToString() string {
 	return string(jsonBytes)
 }
 
-func loadStsClient() (stsClient *sts.Client) {
-	stsConf := new(stscredentials.Config).SetType("ecs_ram_role").SetRoleName("cloud-desktop-test-server")
+func loadStsClient() (*sts.Client, error) {
+	stsConf := new(stscredentials.Config).SetType("ecs_ram_role").SetRoleName(aliStsRole)
 	stsCredProvider, err := stscredentials.NewCredential(stsConf)
 	if err != nil {
-		journal.Print(journal.PriErr, "Failed to get cred provider, check RAM role setting")
-		os.Exit(1)
+		return nil, err
 	}
 	var cred *stscredentials.CredentialModel
+	maxDuration := iniRetrySec
 	for i := 1; i <= maxRetryTimes; i++ {
 		cred, err = stsCredProvider.GetCredential()
 		if err != nil {
 			if i == maxRetryTimes {
-				journal.Print(journal.PriErr, "Failed to get cred, check RAM role setting")
-				os.Exit(1)
+				return nil, err
 			}
-			maxDuration := min(1<<i, maxRetrySec)
+			maxDuration = min(maxDuration*2, maxRetrySec)
 			sleepSec := rand.Intn(maxDuration/2) + maxDuration/2
 			time.Sleep(time.Second * time.Duration(sleepSec))
 			continue
@@ -93,30 +95,39 @@ func loadStsClient() (stsClient *sts.Client) {
 			break
 		}
 	}
-	stsClient, err = sts.NewClient(&client.Config{
+	return sts.NewClient(&client.Config{
 		AccessKeyId:     cred.AccessKeyId,
 		AccessKeySecret: cred.AccessKeySecret,
 		SecurityToken:   cred.SecurityToken,
 		Endpoint:        aws.String("sts-vpc.cn-shanghai.aliyuncs.com"),
 	})
-	if err != nil {
-		journal.Print(journal.PriErr, "Failed to create sts client, check RAM role setting")
-		os.Exit(1)
-	}
-	return
 }
 
 func StartStsServer() {
 	minStsReqIntvl := time.Second / time.Duration(maxReqTimesPerSec)
-	var stsClient *sts.Client
-	stsClient = loadStsClient()
+	var stsClient *sts.Client = nil
 	for {
 		req := <-reqChan
-		var res *sts.AssumeRoleResponse
+		var res *sts.AssumeRoleResponse = nil
 		var err error
+		maxDuration := iniRetrySec
 		for i := 1; i <= maxRetryTimes; i++ {
+			if stsClient == nil {
+				if i == maxRetryTimes {
+					journal.Print(journal.PriErr, "Failed to load sts client")
+					res = nil
+					break
+				}
+				stsClient, err = loadStsClient()
+				if err != nil {
+					maxDuration = min(maxDuration*2, maxRetrySec)
+					sleepSec := rand.Intn(maxDuration/2) + maxDuration/2
+					time.Sleep(time.Second * time.Duration(sleepSec))
+					continue
+				}
+			}
 			res, err = stsClient.AssumeRole(&sts.AssumeRoleRequest{
-				RoleArn:         aws.String(aliStsRole),
+				RoleArn:         aws.String(aliOssRole),
 				RoleSessionName: aws.String(aliSessionName),
 				DurationSeconds: aws.Int64(900),
 				Policy:          aws.String(newPolicy(req.action, req.resource).ToString()),
@@ -124,24 +135,31 @@ func StartStsServer() {
 			if err != nil {
 				if i == maxRetryTimes {
 					journal.Print(journal.PriErr, "Unknown sts error: %v", err)
-					os.Exit(1)
+					res = nil
+					break
 				}
 				if sdkErr, ok := err.(*tea.SDKError); ok && aws.ToString(sdkErr.Code) == "InvalidSecurityToken.Expired" {
-					stsClient = loadStsClient()
+					stsClient, _ = loadStsClient()
 				}
-				maxDuration := min(1<<i, maxRetrySec)
+				maxDuration = min(maxDuration*2, maxRetrySec)
 				sleepSec := rand.Intn(maxDuration/2) + maxDuration/2
 				time.Sleep(time.Second * time.Duration(sleepSec))
 			} else {
 				break
 			}
 		}
-		expTime, _ := time.Parse(time.RFC3339, aws.ToString(res.Body.Credentials.Expiration))
-		cred := StsCred{
-			AccessKeyId:     aws.ToString(res.Body.Credentials.AccessKeyId),
-			AccessKeySecret: aws.ToString(res.Body.Credentials.AccessKeySecret),
-			SecurityToken:   aws.ToString(res.Body.Credentials.SecurityToken),
-			ExpTime:         expTime,
+		var cred StsCred
+		if res != nil {
+			expTime, _ := time.Parse(time.RFC3339, aws.ToString(res.Body.Credentials.Expiration))
+			cred = StsCred{
+				AccessKeyId:     aws.ToString(res.Body.Credentials.AccessKeyId),
+				AccessKeySecret: aws.ToString(res.Body.Credentials.AccessKeySecret),
+				SecurityToken:   aws.ToString(res.Body.Credentials.SecurityToken),
+				ExpTime:         expTime,
+				Err:             nil,
+			}
+		} else {
+			cred = StsCred{Err: fmt.Errorf("unknown ali server error")}
 		}
 		req.resChan <- cred
 		time.Sleep(minStsReqIntvl)
@@ -167,7 +185,9 @@ func GetStsCred(action string, hashList []string, bucket string) (cred StsCred) 
 		if !exist || ifce.(StsCred).ExpTime.Add(-5*time.Minute).Before(time.Now()) {
 			actions = []string{ActionPutObject, ActionAbortMultipartUpload, ActionListParts}
 			cred = getStsCred(actions, []string{ResourceHead + "*"})
-			credMap.Store("putObjCred", cred)
+			if cred.Err != nil {
+				credMap.Store("putObjCred", cred)
+			}
 		} else {
 			cred = ifce.(StsCred)
 		}
@@ -182,7 +202,9 @@ func GetStsCred(action string, hashList []string, bucket string) (cred StsCred) 
 		if !exist || ifce.(StsCred).ExpTime.Add(-5*time.Minute).Before(time.Now()) {
 			actions = []string{ActionAll}
 			cred = getStsCred(actions, []string{ResourceHead + "*"})
-			credMap.Store("allCred", cred)
+			if cred.Err != nil {
+				credMap.Store("allCred", cred)
+			}
 		} else {
 			cred = ifce.(StsCred)
 		}

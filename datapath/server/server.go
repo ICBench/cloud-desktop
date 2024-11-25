@@ -409,6 +409,10 @@ func inboxServer() error {
 			return
 		}
 		cred := aliutils.GetStsCred("", []string{}, ossBucket)
+		if cred.Err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Sts server error.")})
+			return
+		}
 		ossClient := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, true)
 		if ossClient == nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access oss server.")})
@@ -442,6 +446,10 @@ func inboxServer() error {
 				useInStr = "false"
 			}
 			cred := aliutils.GetStsCred(aliutils.ActionPutObject, []string{}, ossBucket)
+			if cred.Err != nil {
+				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Sts server error.")})
+				return
+			}
 			writeRes(w, http.StatusPreconditionRequired, map[string][]byte{
 				"needfile":        returnBytes,
 				"accesskeyid":     []byte(cred.AccessKeyId),
@@ -642,6 +650,10 @@ func outboxServer() error {
 			}
 		}
 		cred := aliutils.GetStsCred(aliutils.ActionGetObject, hashList, ossBucket)
+		if cred.Err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Sts server error.")})
+			return
+		}
 		var useInStr string
 		if !isOutside(vpcId) {
 			useInStr = "true"
@@ -852,6 +864,10 @@ func fileTidy() {
 		}
 	}
 	cred := aliutils.GetStsCred("", []string{}, ossBucket)
+	if cred.Err != nil {
+		journal.Print(journal.PriErr, "File tidy error: sts server error.")
+		return
+	}
 	ossClient := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, true)
 	if ossClient == nil {
 		journal.Print(journal.PriErr, "File tidy error: failed to create oss client.")
