@@ -84,7 +84,7 @@ func inbox(filePaths []string, dst string) {
 	}
 	if listSize > 1<<20 {
 		log.Println("Too many files, need to compress into a package")
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	for range retryTime {
 		res := sendApplication(sendFileList, dst)
@@ -103,7 +103,7 @@ func inbox(filePaths []string, dst string) {
 			ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, useIn)
 			if ossClient == nil {
 				log.Println("Failed to create oss client.")
-				os.Exit(-1)
+				os.Exit(1)
 			}
 			uploader := manager.NewUploader(ossClient)
 			for _, needFile := range needFileList {

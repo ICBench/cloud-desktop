@@ -122,7 +122,7 @@ func LoadHttpClient(crtFilePath string, keyFilePath string, client *http.Client,
 	cert, err := tls.LoadX509KeyPair(crtFilePath, keyFilePath)
 	if err != nil {
 		log.Println("Failed to load certs")
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	client.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{
@@ -158,7 +158,7 @@ func SendReq(client *http.Client, host string, data map[string][]byte, userName 
 	res, err := client.Do(req)
 	if err != nil {
 		log.Printf("Failed to send request: %v\n", err)
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	return res
 }
@@ -169,7 +169,7 @@ func ParseRes(res *http.Response) (data map[string][]byte) {
 	jsonBytes, err := io.ReadAll(res.Body)
 	if err != nil {
 		log.Printf("Failed to parse response: %v\n", err)
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	err = json.Unmarshal(jsonBytes, &jsonData)
 	if err != nil {
@@ -211,24 +211,24 @@ func LoadConfig(confPath string, confList map[string]*string) {
 	configFile, err := os.Open(confPath)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to access the config file: %v.", err)
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	configBytes, err := io.ReadAll(configFile)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to read the config file: %v.", err)
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	config := make(map[string]interface{})
 	err = yaml.Unmarshal(configBytes, config)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to parse the config file: %v.", err)
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	for name, value := range confList {
 		ifce, exist := config[name]
 		if !exist {
 			journal.Print(journal.PriErr, "Config file invalid: missing %v", name)
-			os.Exit(-1)
+			os.Exit(1)
 		}
 		*value = ifce.(string)
 	}

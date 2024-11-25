@@ -74,7 +74,7 @@ func loadStsClient() (stsClient *sts.Client) {
 	stsCredProvider, err := stscredentials.NewCredential(stsConf)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to create sts client, check RAM role setting")
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	for i := 1; i <= stsClientRetryTime; i++ {
 		t, err := stsCredProvider.GetCredential()
@@ -93,7 +93,7 @@ func loadStsClient() (stsClient *sts.Client) {
 		}
 	}
 	journal.Print(journal.PriErr, "Failed to create sts client, check RAM role setting")
-	os.Exit(-1)
+	os.Exit(1)
 	return
 }
 
@@ -117,7 +117,7 @@ func StartStsServer() {
 					stsClient = loadStsClient()
 				} else {
 					journal.Print(journal.PriErr, "Unknown sts error: %v", err)
-					os.Exit(-1)
+					os.Exit(1)
 				}
 			} else {
 				break

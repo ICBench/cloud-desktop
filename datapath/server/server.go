@@ -57,7 +57,7 @@ func loadCerts() {
 	})
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to load certs")
-		os.Exit(-1)
+		os.Exit(1)
 	}
 }
 
@@ -66,12 +66,12 @@ func connectDb() {
 	dbClient, err = sql.Open("mysql", "shizhao:icbench@tcp(127.0.0.1:3306)/data_path_server")
 	if err != nil {
 		journal.Print(journal.PriErr, "Invalid database parameter: %v\n", err)
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	err = dbClient.Ping()
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to connect database: %v\n", err)
-		os.Exit(-1)
+		os.Exit(1)
 	}
 }
 

@@ -41,7 +41,7 @@ func queryUserInfo() map[string]string {
 	res := utils.SendReq(client, host, make(map[string][]byte), loUserName, &loPrivKey)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Send request failed http: %v\n", res.StatusCode)
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	data := utils.ParseRes(res)
 	return map[string]string{
@@ -56,7 +56,7 @@ func queryAppList() (appList []utils.AppInfo) {
 	res := utils.SendReq(client, host, map[string][]byte{}, loUserName, &loPrivKey)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Send request failed http: %v\n", res.StatusCode)
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	data := utils.ParseRes(res)
 	json.Unmarshal(data["applist"], &appList)
@@ -107,7 +107,7 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 	ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, useIn)
 	if ossClient == nil {
 		log.Println("Failed to create oss client.")
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	downloader := manager.NewDownloader(ossClient)
 	for id, app := range fileList {
@@ -115,19 +115,19 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 		err := os.MkdirAll(appSavePath, 0755)
 		if err != nil {
 			log.Printf("Failed to access %v: %v", appSavePath, err)
-			os.Exit(-1)
+			os.Exit(1)
 		}
 		for _, info := range app {
 			fileSavePath := appSavePath + info.RelPath
 			err := os.MkdirAll(filepath.Dir(fileSavePath), 0755)
 			if err != nil {
 				log.Printf("Failed to access %v: %v", fileSavePath, err)
-				os.Exit(-1)
+				os.Exit(1)
 			}
 			file, err := os.Create(fileSavePath)
 			if err != nil {
 				log.Printf("Failed to access %v: %v", fileSavePath, err)
-				os.Exit(-1)
+				os.Exit(1)
 			}
 			defer file.Close()
 			header, err := ossClient.HeadObject(context.TODO(), &s3.HeadObjectInput{
@@ -163,7 +163,7 @@ func reviewApp(appIdList []string, status string) map[string]string {
 	data := utils.ParseRes(res)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("http %v: %v", res.StatusCode, string(data["error"]))
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	reviewStat := make(map[string]string)
 	json.Unmarshal(data["reviewstat"], &reviewStat)
@@ -177,7 +177,7 @@ func listVpc() []utils.VpcInfo {
 	data := utils.ParseRes(res)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("http %v: %v", res.StatusCode, string(data["error"]))
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	json.Unmarshal(data["vpclist"], &vpcList)
 	return vpcList
@@ -190,7 +190,7 @@ func listUserByVpcId(vpcId int) []utils.UserInfo {
 	data := utils.ParseRes(res)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("http %v: %v", res.StatusCode, string(data["error"]))
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	json.Unmarshal(data["userlist"], &userList)
 	return userList
@@ -202,7 +202,7 @@ func authUser(user string, vpcId int, permission int) utils.UserInfo {
 	data := utils.ParseRes(res)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("http %v: %v", res.StatusCode, string(data["error"]))
-		os.Exit(-1)
+		os.Exit(1)
 	}
 	var userInfo utils.UserInfo
 	json.Unmarshal(data["userinfo"], &userInfo)
