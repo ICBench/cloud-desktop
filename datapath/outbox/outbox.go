@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -92,16 +91,6 @@ func queryAppInfo(idList []int) (appInfo map[int][]utils.AppFile) {
 	return
 }
 
-type multiWriterAt struct {
-	writeAtBuf io.WriterAt
-	writeBuf   io.Writer
-}
-
-func (b multiWriterAt) WriteAt(p []byte, off int64) (n int, err error) {
-	b.writeBuf.Write(p)
-	return b.writeAtBuf.WriteAt(p, off)
-}
-
 func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAppList []int) {
 	host := fmt.Sprintf("https://%v:9991/download", serverHost)
 	idListBytes, _ := json.Marshal(idList)
@@ -153,8 +142,8 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 				aws.ToInt64(header.ContentLength),
 				fmt.Sprintf("Downloading %v", file.Name()),
 			)
-			buf := multiWriterAt{file, bar}
-			_, err = downloader.Download(context.TODO(), buf, &s3.GetObjectInput{
+			body := utils.FileBar{File: file, Bar: bar}
+			_, err = downloader.Download(context.TODO(), body, &s3.GetObjectInput{
 				Bucket: aws.String(string(data["ossbucket"])),
 				Key:    aws.String(info.Hash),
 			})

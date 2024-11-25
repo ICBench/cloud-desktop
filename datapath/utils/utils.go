@@ -57,6 +57,32 @@ type UserInfo struct {
 	Permission int
 }
 
+type FileBar struct {
+	File *os.File
+	Bar  io.Writer
+}
+
+func (w FileBar) WriteAt(p []byte, off int64) (n int, err error) {
+	w.Bar.Write(p)
+	return w.File.WriteAt(p, off)
+}
+
+func (r FileBar) ReadAt(b []byte, off int64) (n int, err error) {
+	n, err = r.File.ReadAt(b, off)
+	r.Bar.Write(b)
+	return
+}
+
+func (r FileBar) Read(b []byte) (n int, err error) {
+	n, err = r.File.Read(b)
+	r.Bar.Write(b)
+	return
+}
+
+func (r FileBar) Seek(offset int64, whence int) (ret int64, err error) {
+	return r.File.Seek(offset, whence)
+}
+
 func LoadCertsAndKeys(caPoolPath string, caPool *x509.CertPool, loPrivKeyPath string, loPrivKey *ed25519.PrivateKey) {
 	filepath.Walk(caPoolPath, func(path string, info fs.FileInfo, err error) error {
 		if !info.Mode().IsRegular() {

@@ -48,6 +48,12 @@ func sendApplication(sendFileList []utils.AppFile, dst string) *http.Response {
 	return utils.SendReq(client, host, map[string][]byte{"sendfile": jsonData, "dstname": []byte(dst)}, loUserName, &loPrivKey)
 }
 
+func getFileSHA256(file *os.File) []byte {
+	hasher := sha256.New()
+	io.Copy(hasher, file)
+	return hasher.Sum(nil)
+}
+
 func inbox(filePaths []string, dst string) {
 	var sendFileList []utils.AppFile
 	filePathTmp := make(map[string]string)
@@ -58,13 +64,13 @@ func inbox(filePaths []string, dst string) {
 			if !info.Mode().IsRegular() || err != nil {
 				return err
 			}
-			fileBytes, err := os.ReadFile(path)
+			file, err := os.Open(path)
 			if err != nil {
 				log.Printf("Failed to access %v: %v", path, err)
 				return err
 			}
-			fileHashBytes := sha256.Sum256(fileBytes)
-			fileHash := hex.EncodeToString(fileHashBytes[:])
+			fileHashBytes := getFileSHA256(file)
+			fileHash := hex.EncodeToString(fileHashBytes)
 			fileRelPath, err := filepath.Rel(basePath, path)
 			if err != nil {
 				log.Printf("Failed to access %v: %v", path, err)
@@ -113,10 +119,11 @@ func inbox(filePaths []string, dst string) {
 					stat.Size(),
 					fmt.Sprintf("Uploading %v", stat.Name()),
 				)
+				body := utils.FileBar{File: file, Bar: bar}
 				_, err = uploader.Upload(context.TODO(), &s3.PutObjectInput{
 					Bucket: aws.String(string(data["ossbucket"])),
 					Key:    aws.String(needFile),
-					Body:   io.TeeReader(file, bar),
+					Body:   body,
 				})
 				if err != nil {
 					log.Printf("Failed to upload file: %v\n", stat.Name())
