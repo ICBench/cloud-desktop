@@ -69,7 +69,7 @@ func (p policy) ToString() string {
 	return string(jsonBytes)
 }
 
-func loadStsClient(stsClient **sts.Client) {
+func loadStsClient() (stsClient *sts.Client) {
 	stsConf := new(stscredentials.Config).SetType("ecs_ram_role").SetRoleName("cloud-desktop-test-server")
 	stsCredProvider, err := stscredentials.NewCredential(stsConf)
 	if err != nil {
@@ -82,7 +82,7 @@ func loadStsClient(stsClient **sts.Client) {
 			time.Sleep((1 << (i - 1)) * time.Second)
 			continue
 		}
-		*stsClient, err = sts.NewClient(&client.Config{
+		stsClient, err = sts.NewClient(&client.Config{
 			AccessKeyId:     t.AccessKeyId,
 			AccessKeySecret: t.AccessKeySecret,
 			SecurityToken:   t.SecurityToken,
@@ -94,12 +94,13 @@ func loadStsClient(stsClient **sts.Client) {
 	}
 	journal.Print(journal.PriErr, "Failed to create sts client, check RAM role setting")
 	os.Exit(-1)
+	return
 }
 
 func StartStsServer() {
 	minStsReqIntvl := time.Second / time.Duration(maxReqTimesPerSec)
 	var stsClient *sts.Client
-	loadStsClient(&stsClient)
+	stsClient = loadStsClient()
 	for {
 		req := <-reqChan
 		var res *sts.AssumeRoleResponse
@@ -113,7 +114,7 @@ func StartStsServer() {
 			})
 			if err != nil {
 				if sdkErr, ok := err.(*tea.SDKError); ok && aws.ToString(sdkErr.Code) == "InvalidSecurityToken.Expired" {
-					loadStsClient(&stsClient)
+					stsClient = loadStsClient()
 				} else {
 					journal.Print(journal.PriErr, "Unknown sts error: %v", err)
 					os.Exit(-1)
