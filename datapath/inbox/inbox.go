@@ -40,12 +40,19 @@ var (
 
 func sendApplication(sendFileList []utils.AppFile, dst string) *http.Response {
 	host := fmt.Sprintf("https://%v:9990/apply", serverHost)
-	jsonData, err := json.Marshal(sendFileList)
-	if err != nil {
-		log.Printf("Marshal application failed: %v\n", err)
-		return nil
-	}
+	jsonData, _ := json.Marshal(sendFileList)
 	return utils.SendReq(client, host, map[string][]byte{"sendfile": jsonData, "dstname": []byte(dst)}, loUserName, &loPrivKey)
+}
+
+func sendCancel(appId string) {
+	host := fmt.Sprintf("https://%v:9990/cancel", serverHost)
+	utils.SendReq(client, host, map[string][]byte{"appid": []byte(appId)}, loUserName, &loPrivKey)
+	os.Exit(1)
+}
+
+func sendComplete(appId string) *http.Response {
+	host := fmt.Sprintf("https://%v:9990/complete", serverHost)
+	return utils.SendReq(client, host, map[string][]byte{"appid": []byte(appId)}, loUserName, &loPrivKey)
 }
 
 func getFileSHA256(file *os.File) []byte {
@@ -86,67 +93,64 @@ func inbox(filePaths []string, dst string) {
 		log.Println("Too many files, need to compress into a package")
 		os.Exit(1)
 	}
-	for range retryTime {
-		res := sendApplication(sendFileList, dst)
-		if res == nil {
-			return
+	res := sendApplication(sendFileList, dst)
+	data := utils.ParseRes(res)
+	if res.StatusCode != http.StatusOK {
+		err := string(data["error"])
+		log.Printf("Send application error: %v\n", err)
+		return
+	}
+	useIn := string(data["usein"]) == "true"
+	accessKeyId := string(data["accesskeyid"])
+	accessKeySecret := string(data["accesskeysecret"])
+	securityToken := string(data["securitytoken"])
+	appId := string(data["appid"])
+	ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, useIn)
+	if ossClient == nil {
+		log.Println("Failed to create oss client.")
+		sendCancel(appId)
+	}
+	uploader := manager.NewUploader(ossClient)
+	for _, sendFile := range sendFileList {
+		path := filePathTmp[sendFile.Hash]
+		file, err := os.Open(path)
+		if err != nil {
+			log.Printf("Failed to access %v: %v", path, err)
+			sendCancel(appId)
 		}
-		data := utils.ParseRes(res)
-		switch res.StatusCode {
-		case http.StatusPreconditionRequired:
-			var needFileList []string
-			json.Unmarshal(data["needfile"], &needFileList)
-			var useIn = string(data["usein"]) == "true"
-			accessKeyId := string(data["accesskeyid"])
-			accessKeySecret := string(data["accesskeysecret"])
-			securityToken := string(data["securitytoken"])
-			ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, useIn)
-			if ossClient == nil {
-				log.Println("Failed to create oss client.")
-				os.Exit(1)
-			}
-			uploader := manager.NewUploader(ossClient)
-			for _, needFile := range needFileList {
-				path := filePathTmp[needFile]
-				file, err := os.Open(path)
-				if err != nil {
-					log.Printf("Failed to access %v: %v", path, err)
-					continue
-				}
-				defer file.Close()
-				stat, _ := file.Stat()
-				bar := progressbar.DefaultBytes(
-					stat.Size(),
-					fmt.Sprintf("Uploading %v", stat.Name()),
-				)
-				body := utils.FileBar{File: file, Bar: bar}
-				_, err = uploader.Upload(context.TODO(), &s3.PutObjectInput{
-					Bucket: aws.String(string(data["ossbucket"])),
-					Key:    aws.String(needFile),
-					Body:   body,
-				})
-				if err != nil {
-					log.Printf("Failed to upload file: %v\n", stat.Name())
-				}
-				fmt.Println()
-			}
-		case http.StatusOK:
-			var warning []string
-			json.Unmarshal(data["warning"], &warning)
-			if len(warning) > 0 {
-				log.Println("Application sent succeed with warning:")
-				for _, w := range warning {
-					fmt.Println(w)
-				}
-			} else {
-				log.Println("Application sent succeed.")
-			}
-			return
-		default:
-			err := string(data["error"])
-			log.Printf("Send application error: %v\n", err)
-			return
+		defer file.Close()
+		stat, _ := file.Stat()
+		bar := progressbar.DefaultBytes(
+			stat.Size(),
+			fmt.Sprintf("Uploading %v", stat.Name()),
+		)
+		body := utils.FileBar{File: file, Bar: bar}
+		_, err = uploader.Upload(context.TODO(), &s3.PutObjectInput{
+			Bucket: aws.String(string(data["ossbucket"])),
+			Key:    aws.String(appId + "/" + sendFile.Hash),
+			Body:   body,
+		})
+		if err != nil {
+			log.Printf("Failed to upload file: %v\n", stat.Name())
+			sendCancel(appId)
 		}
+		fmt.Println()
+	}
+	res = sendComplete(appId)
+	if res.StatusCode != http.StatusOK {
+		err := string(data["error"])
+		log.Printf("Send complete error: %v\n", err)
+		return
+	}
+	var warning []string
+	json.Unmarshal(data["warning"], &warning)
+	if len(warning) > 0 {
+		log.Println("Application sent succeed with warning:")
+		for _, w := range warning {
+			fmt.Println(w)
+		}
+	} else {
+		log.Println("Application sent succeed.")
 	}
 }
 

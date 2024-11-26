@@ -1,6 +1,7 @@
 package aliutils
 
 import (
+	"datapath/utils"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -177,7 +178,7 @@ func getStsCred(action, resource []string) StsCred {
 	return <-resChan
 }
 
-func GetStsCred(action string, hashList []string, bucket string) (cred StsCred) {
+func GetStsCred(action string, appIdList []string, bucket string) (cred StsCred) {
 	var actions, resource []string
 	switch action {
 	case ActionPutObject:
@@ -193,8 +194,8 @@ func GetStsCred(action string, hashList []string, bucket string) (cred StsCred) 
 		}
 	case ActionGetObject:
 		actions = []string{ActionGetObject}
-		for _, hash := range hashList {
-			resource = append(resource, ResourceHead+bucket+"/"+hash)
+		for _, id := range appIdList {
+			resource = append(resource, ResourceHead+bucket+"/"+id+"/*")
 		}
 		cred = getStsCred(actions, resource)
 	default:

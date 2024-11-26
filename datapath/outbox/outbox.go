@@ -91,12 +91,12 @@ func queryAppInfo(idList []int) (appInfo map[int][]utils.AppFile) {
 	return
 }
 
-func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAppList []int) {
+func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAppList []string) {
 	host := fmt.Sprintf("https://%v:9991/download", serverHost)
 	idListBytes, _ := json.Marshal(idList)
 	res := utils.SendReq(client, host, map[string][]byte{"appidlist": idListBytes}, loUserName, &loPrivKey)
 	data := utils.ParseRes(res)
-	var fileList map[int][]utils.AppFile
+	var fileList map[string][]utils.AppFile
 	json.Unmarshal(data["allowedapplist"], &allowedAppList)
 	json.Unmarshal(data["rejectedapplist"], &rejectedAppList)
 	json.Unmarshal(data["filelist"], &fileList)
@@ -111,7 +111,7 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 	}
 	downloader := manager.NewDownloader(ossClient)
 	for id, app := range fileList {
-		appSavePath := basePath + strconv.Itoa(id) + "/"
+		appSavePath := basePath + id + "/"
 		err := os.MkdirAll(appSavePath, 0755)
 		if err != nil {
 			log.Printf("Failed to access %v: %v", appSavePath, err)
@@ -132,7 +132,7 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 			defer file.Close()
 			header, err := ossClient.HeadObject(context.TODO(), &s3.HeadObjectInput{
 				Bucket: aws.String(string(data["ossbucket"])),
-				Key:    aws.String(info.Hash),
+				Key:    aws.String(id + "/" + info.Hash),
 			})
 			if err != nil {
 				log.Printf("Failed to get file info: %v\n", file.Name())
@@ -145,7 +145,7 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 			body := utils.FileBar{File: file, Bar: bar}
 			_, err = downloader.Download(context.TODO(), body, &s3.GetObjectInput{
 				Bucket: aws.String(string(data["ossbucket"])),
-				Key:    aws.String(info.Hash),
+				Key:    aws.String(id + "/" + info.Hash),
 			})
 			if err != nil {
 				log.Printf("Failed to download file: %v\n", file.Name())
@@ -309,7 +309,7 @@ func main() {
 		Run: func(cmd *cobra.Command, args []string) {
 			allowedAppList, rejectedAppList := downloadFiles(args, saveFilePath)
 			if jsonFlag {
-				var data = map[string][]int{"allowed": allowedAppList, "rejected": rejectedAppList}
+				var data = map[string][]string{"allowed": allowedAppList, "rejected": rejectedAppList}
 				dataBytes, _ := json.Marshal(data)
 				fmt.Println(string(dataBytes))
 			} else {

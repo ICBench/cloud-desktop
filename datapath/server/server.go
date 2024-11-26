@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -33,10 +34,13 @@ var (
 	caPoolPath  = "/usr/local/etc/dataPathServer/CApool"
 	crtFilePath = "/usr/local/etc/dataPathServer/cert/server.crt"
 	keyFilePath = "/usr/local/etc/dataPathServer/cert/server.key"
-	caPool      = x509.NewCertPool()
-	dbClient    *sql.DB
-	ossBucket   string
+	pendingApp sync.Map
 )
+
+type pendingAppInfo struct {
+	tx         *sql.Tx
+	expiryTime time.Time
+}
 
 func loadCerts() {
 	err := filepath.Walk(caPoolPath, func(path string, info fs.FileInfo, err error) error {
@@ -75,41 +79,6 @@ func connectDb() {
 	}
 }
 
-func checkFileExist(client *s3.Client, sendFileList []utils.AppFile) ([]string, error) {
-	var needFileList = []string{}
-	for _, file := range sendFileList {
-		rows, err := dbClient.Query("SELECT hash FROM files WHERE hash = ?", file.Hash)
-		if err != nil {
-			journal.Print(journal.PriErr, "Failed to query file info from database: %v\n", err)
-			return []string{}, err
-		}
-		if !rows.Next() {
-			_, err := client.HeadObject(context.TODO(), &s3.HeadObjectInput{Bucket: aws.String(ossBucket), Key: aws.String(file.Hash)})
-			if err != nil {
-				var responseError *awshttp.ResponseError
-				if errors.As(err, &responseError) && responseError.ResponseError.HTTPStatusCode() == http.StatusNotFound {
-					needFileList = append(needFileList, file.Hash)
-				} else {
-					return []string{}, err
-				}
-			} else {
-				expTime := time.Now().AddDate(0, 30, 0)
-				_, err = dbClient.Exec("INSERT INTO files (hash,expiration_time) VALUES (?,?)", file.Hash, expTime)
-				if err != nil {
-					journal.Print(journal.PriErr, "Failed to insert file info to database: %v\n", err)
-					return []string{}, err
-				}
-			}
-		} else {
-			err := updateFileInfo(file.Hash)
-			if err != nil {
-				return []string{}, err
-			}
-		}
-	}
-	return needFileList, nil
-}
-
 func hasReviewPer(permission int) bool {
 	return permission&utils.PerReview != 0
 }
@@ -122,33 +91,36 @@ func isAppStatAllow(status int) bool {
 	return status == 0
 }
 
-func createNewApplication(userKey ed25519.PublicKey, srcVpcId int, dstVpcId int, sendFileList []utils.AppFile, status int) error {
+func createNewApplication(tx *sql.Tx, userKey ed25519.PublicKey, srcVpcId int, dstVpcId int, sendFileList []utils.AppFile, status int) (int, error) {
 	user := parseUserFromKey(userKey)
-	result, err := dbClient.Exec("INSERT INTO applications (owner,source_vpc_id,destination_vpc_id,approval_status) VALUES (?,?,?,?)", user, srcVpcId, dstVpcId, status)
+	result, err := tx.Exec("INSERT INTO applications (owner,source_vpc_id,destination_vpc_id,approval_status) VALUES (?,?,?,?)", user, srcVpcId, dstVpcId, status)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to create new application: %v", err)
-		return err
+		return 0, err
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to get application id: %v", err)
-		return err
+		return 0, err
 	}
 	for _, sendFile := range sendFileList {
-		_, err := dbClient.Exec("INSERT INTO application_file (file_hash,application_id,file_info) VALUES (?,?,?)", sendFile.Hash, id, sendFile.RelPath)
+		err := updateFileInfo(tx, sendFile.Hash)
+		if err != nil {
+			journal.Print(journal.PriErr, "Failed to update file info: %v", err)
+			return 0, err
+		}
+		_, err = tx.Exec("INSERT INTO application_file (file_hash,application_id,file_info) VALUES (?,?,?)", sendFile.Hash, id, sendFile.RelPath)
 		if err != nil {
 			journal.Print(journal.PriErr, "Failed to create new application: %v", err)
-			return err
+			return 0, err
 		}
 	}
-	return nil
+	return int(id), nil
 }
 
-func updateFileInfo(hash string) error {
-	_, err := dbClient.Exec("UPDATE files SET expiration_time=? WHERE hash=?", time.Now().AddDate(0, 30, 0), hash)
-	if err != nil {
-		journal.Print(journal.PriErr, "Update file database error: %v\n", err)
-	}
+func updateFileInfo(tx *sql.Tx, hash string) error {
+	expTime := time.Now().AddDate(0, 30, 0)
+	_, err := tx.Exec("INSERT INTO files (hash,expiration_time) VALUES (?,?) ON DUPLICATE KEY UPDATE expiration_time=VALUES(expiration_time)", hash, expTime)
 	return err
 }
 
@@ -288,7 +260,7 @@ func reviewApp(idStr string, userKey ed25519.PublicKey, statusStr string) error 
 	return nil
 }
 
-func filterAllowedApp(user string, vpcId int, appStrList []string) (allowedAppList, rejectedAppList []int, err error) {
+func filterAllowedApp(user string, vpcId int, appStrList []string) (allowedAppList, rejectedAppList []string, err error) {
 	for _, idStr := range appStrList {
 		var id int
 		id, err = strconv.Atoi(idStr)
@@ -310,16 +282,16 @@ func filterAllowedApp(user string, vpcId int, appStrList []string) (allowedAppLi
 				return
 			}
 			if !hasReviewPer(permission) {
-				rejectedAppList = append(rejectedAppList, id)
+				rejectedAppList = append(rejectedAppList, strconv.Itoa(id))
 				continue
 			}
 		} else {
 			if !isAppStatAllow(status) {
-				rejectedAppList = append(rejectedAppList, id)
+				rejectedAppList = append(rejectedAppList, strconv.Itoa(id))
 				continue
 			}
 		}
-		allowedAppList = append(allowedAppList, id)
+		allowedAppList = append(allowedAppList, strconv.Itoa(id))
 	}
 	return
 }
@@ -408,6 +380,61 @@ func inboxServer() error {
 			writeRes(w, http.StatusMisdirectedRequest, map[string][]byte{"error": []byte("Error send file list.")})
 			return
 		}
+		tx, err := dbClient.Begin()
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
+			return
+		}
+		appId, err := createNewApplication(tx, userKey, src, dst, sendFileList, 2)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Create application error.")})
+			return
+		}
+		var useInStr string
+		if !isOutside(src) {
+			useInStr = "true"
+		} else {
+			useInStr = "false"
+		}
+		cred := aliutils.GetStsCred(aliutils.ActionPutObject, []string{}, ossBucket)
+		if cred.Err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Sts server error.")})
+			return
+		}
+		warningBytes, _ := json.Marshal(warning)
+		pendingApp.Store(appId, pendingAppInfo{tx: tx, expiryTime: time.Now().Add(24 * time.Hour)})
+		writeRes(w, http.StatusOK, map[string][]byte{
+			"accesskeyid":     []byte(cred.AccessKeyId),
+			"accesskeysecret": []byte(cred.AccessKeySecret),
+			"securitytoken":   []byte(cred.SecurityToken),
+			"usein":           []byte(useInStr),
+			"ossbucket":       []byte(ossBucket),
+			"appid":           []byte(strconv.Itoa(appId)),
+			"warning":         warningBytes,
+		})
+	})
+	mux.HandleFunc("/complete", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
+			return
+		}
+		userKey, data := parseReq(r)
+		if userKey == nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
+			return
+		}
+		appId, _ := strconv.Atoi(string(data["appid"]))
+		ifce, exist := pendingApp.Load(appId)
+		if !exist {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Application does not exist.")})
+			return
+		}
+		info := ifce.(pendingAppInfo)
+		appFileRows, err := info.tx.Query("SELECT file_hash FROM application_file WHERE application_id=?", appId)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
+			return
+		}
 		cred := aliutils.GetStsCred("", []string{}, ossBucket)
 		if cred.Err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Sts server error.")})
@@ -418,48 +445,76 @@ func inboxServer() error {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access oss server.")})
 			return
 		}
-		needFileList, err := checkFileExist(ossClient, sendFileList)
-		if err != nil {
-			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access file info.")})
-			return
-		}
-		if len(needFileList) == 0 {
-			var iniStat int = 1
-			if src == 0 {
-				iniStat = 0
-			}
-			err := createNewApplication(userKey, src, dst, sendFileList, iniStat)
+		for appFileRows.Next() {
+			var hash string
+			err := appFileRows.Scan(&hash)
 			if err != nil {
-				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Create application error.")})
-				return
-			} else {
-				warningBytes, _ := json.Marshal(warning)
-				writeRes(w, http.StatusOK, map[string][]byte{"warning": warningBytes})
+				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
 				return
 			}
-		} else {
-			returnBytes, _ := json.Marshal(needFileList)
-			var useInStr string
-			if !isOutside(src) {
-				useInStr = "true"
-			} else {
-				useInStr = "false"
-			}
-			cred := aliutils.GetStsCred(aliutils.ActionPutObject, []string{}, ossBucket)
-			if cred.Err != nil {
-				writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Sts server error.")})
-				return
-			}
-			writeRes(w, http.StatusPreconditionRequired, map[string][]byte{
-				"needfile":        returnBytes,
-				"accesskeyid":     []byte(cred.AccessKeyId),
-				"accesskeysecret": []byte(cred.AccessKeySecret),
-				"securitytoken":   []byte(cred.SecurityToken),
-				"usein":           []byte(useInStr),
-				"ossbucket":       []byte(ossBucket),
+			_, err = ossClient.HeadObject(context.TODO(), &s3.HeadObjectInput{
+				Bucket: aws.String(ossBucket),
+				Key:    aws.String(strconv.Itoa(appId) + "/" + hash),
 			})
+			if err != nil {
+				var responseError *awshttp.ResponseError
+				if errors.As(err, &responseError) && responseError.ResponseError.HTTPStatusCode() == http.StatusNotFound {
+					writeRes(w, http.StatusPreconditionFailed, map[string][]byte{})
+					return
+				} else {
+					writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access oss server.")})
+					return
+				}
+			}
+		}
+		app := info.tx.QueryRow("SELECT source_vpc_id FROM applications WHERE id=?", appId)
+		var src int
+		err = app.Scan(&src)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
 			return
 		}
+		var iniStat int
+		if isOutside(src) {
+			iniStat = 0
+		} else {
+			iniStat = 1
+		}
+		_, err = info.tx.Exec("UPDATE applications SET approval_status=? WHERE id=?", iniStat, appId)
+		if err != nil {
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
+			return
+		}
+		err = info.tx.Commit()
+		if err != nil {
+			journal.Print(journal.PriErr, "Database transaction %v commit Failed.", appId)
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
+			return
+		}
+		writeRes(w, http.StatusOK, map[string][]byte{})
+	})
+	mux.HandleFunc("/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeRes(w, http.StatusMethodNotAllowed, map[string][]byte{"error": []byte("Only post method allowed.")})
+			return
+		}
+		userKey, data := parseReq(r)
+		if userKey == nil {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Unknown user signature.")})
+			return
+		}
+		appId, _ := strconv.Atoi(string(data["appid"]))
+		ifce, exist := pendingApp.LoadAndDelete(appId)
+		if !exist {
+			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Application does not exist.")})
+			return
+		}
+		info := ifce.(pendingAppInfo)
+		err := info.tx.Rollback()
+		if err != nil {
+			journal.Print(journal.PriErr, "Application %v rollback failed.", appId)
+		}
+		writeRes(w, http.StatusOK, map[string][]byte{})
 	})
 	server := &http.Server{
 		Addr: ":9990",
@@ -634,8 +689,7 @@ func outboxServer() error {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte(err.Error())})
 			return
 		}
-		var hashList []string
-		var fileList = map[int][]utils.AppFile{}
+		var fileList = map[string][]utils.AppFile{}
 		for _, appId := range allowedAppList {
 			fileList[appId] = []utils.AppFile{}
 			appFileRows, err := dbClient.Query("SELECT file_hash,file_info FROM application_file WHERE application_id=?", appId)
@@ -646,10 +700,9 @@ func outboxServer() error {
 				var tmpInfo utils.AppFile
 				appFileRows.Scan(&tmpInfo.Hash, &tmpInfo.RelPath)
 				fileList[appId] = append(fileList[appId], tmpInfo)
-				hashList = append(hashList, tmpInfo.Hash)
 			}
 		}
-		cred := aliutils.GetStsCred(aliutils.ActionGetObject, hashList, ossBucket)
+		cred := aliutils.GetStsCred(aliutils.ActionGetObject, allowedAppList, ossBucket)
 		if cred.Err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Sts server error.")})
 			return
@@ -834,6 +887,32 @@ func outboxServer() error {
 }
 
 func fileTidy() {
+	pendingAppRow, err := dbClient.Query("SELECT id FROM applications WHERE approval_status=2")
+	if err != nil {
+		journal.Print(journal.PriErr, "Error while trying to tidy files: %v\n", err)
+		return
+	}
+	for pendingAppRow.Next() {
+		var id int
+		err = pendingAppRow.Scan(&id)
+		if err != nil {
+			journal.Print(journal.PriErr, "Error while trying to tidy files: %v\n", err)
+			return
+		}
+		ifce, exist := pendingApp.Load(id)
+		if !exist {
+			_, err := dbClient.Exec("DELETE FROM applications WHERE id = ?", id)
+			if err != nil {
+				journal.Print(journal.PriErr, "File tidy error: failed to access database.")
+			}
+			continue
+		}
+		info := ifce.(pendingAppInfo)
+		if info.expiryTime.Before(time.Now()) {
+			info.tx.Rollback()
+			pendingApp.Delete(id)
+		}
+	}
 	outdatedFileRow, err := dbClient.Query("SELECT hash FROM files WHERE expiration_time < ?", time.Now())
 	if err != nil {
 		journal.Print(journal.PriErr, "Error while trying to tidy files: %v\n", err)
