@@ -108,9 +108,9 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 	securityToken := string(data["securitytoken"])
 	endPoint := string(data["endpoint"])
 	region := string(data["region"])
-	ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, endPoint, region)
-	if ossClient == nil {
-		log.Println("Failed to create oss client.")
+	ossClient, err := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, endPoint, region)
+	if err != nil {
+		log.Printf("Failed to create oss client: %v\n", err)
 		os.Exit(1)
 	}
 	downloader := manager.NewDownloader(ossClient)

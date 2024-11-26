@@ -451,8 +451,9 @@ func inboxServer() error {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Sts server error.")})
 			return
 		}
-		ossClient := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, ossInEndPoint, region)
-		if ossClient == nil {
+		ossClient, err := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, ossInEndPoint, region)
+		if err != nil {
+			journal.Print(journal.PriErr, "Failed to create oss client %v", err)
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access oss server.")})
 			return
 		}
@@ -959,9 +960,9 @@ func fileTidy() {
 		journal.Print(journal.PriErr, "File tidy error: sts server error.")
 		return
 	}
-	ossClient := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, ossInEndPoint, region)
-	if ossClient == nil {
-		journal.Print(journal.PriErr, "File tidy error: failed to create oss client.")
+	ossClient, err := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, ossInEndPoint, region)
+	if err != nil {
+		journal.Print(journal.PriErr, "File tidy error: failed to create oss client %v", err)
 		return
 	}
 	for file := range delFileList {

@@ -184,17 +184,17 @@ func ParseRes(res *http.Response) (data map[string][]byte) {
 	return
 }
 
-func NewOssClient(accessKeyId, accessKeySecret, securityToken, endPoint, region string) *s3.Client {
+func NewOssClient(accessKeyId, accessKeySecret, securityToken, endPoint, region string) (*s3.Client, error) {
 	creds := credentials.NewStaticCredentialsProvider(accessKeyId, accessKeySecret, securityToken)
 	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithCredentialsProvider(creds))
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(endPoint)
 		o.Region = region
 	})
-	return client
+	return client, nil
 }
 
 func InetAtoN(ipStr string) uint {
