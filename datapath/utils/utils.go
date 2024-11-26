@@ -184,19 +184,15 @@ func ParseRes(res *http.Response) (data map[string][]byte) {
 	return
 }
 
-func NewOssClient(accessKeyId, accessKeySecret, securityToken string, useIn bool) *s3.Client {
+func NewOssClient(accessKeyId, accessKeySecret, securityToken, endPoint, region string) *s3.Client {
 	creds := credentials.NewStaticCredentialsProvider(accessKeyId, accessKeySecret, securityToken)
 	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithCredentialsProvider(creds))
 	if err != nil {
 		return nil
 	}
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		if useIn {
-			o.BaseEndpoint = aws.String("https://s3.oss-cn-shanghai-internal.aliyuncs.com")
-		} else {
-			o.BaseEndpoint = aws.String("https://s3.oss-cn-shanghai.aliyuncs.com")
-		}
-		o.Region = "cn-shanghai"
+		o.BaseEndpoint = aws.String(endPoint)
+		o.Region = region
 	})
 	return client
 }

@@ -24,15 +24,17 @@ const (
 	ActionListParts            = "oss:ListParts"
 	ActionAll                  = "oss:*"
 	ResourceHead               = "acs:oss:*:*:"
+	configPath                 = "/usr/local/etc/dataPathServer/aliConfig.yaml"
 )
 
 var (
 	maxReqTimesPerSec = 50
 	reqChan           = make(chan stsReq, 1000)
 	credMap           sync.Map
-	aliStsRole        = "acs:ram::1450424585376992:role/cloud-desktop-test-server"
-	aliOssRole        = "acs:ram::1450424585376992:role/cloud-desktop-test-oss"
-	aliSessionName    = "cloud-desktop-test"
+	stsRoleName       string
+	ossRole           string
+	sessionName       string
+	endPoint          string
 	maxRetryTimes     = 10
 	maxRetrySec       = 60
 	iniRetrySec       = 1
@@ -75,7 +77,7 @@ func (p policy) ToString() string {
 }
 
 func loadStsClient() (*sts.Client, error) {
-	stsConf := new(stscredentials.Config).SetType("ecs_ram_role").SetRoleName(aliStsRole)
+	stsConf := new(stscredentials.Config).SetType("ecs_ram_role").SetRoleName(stsRoleName)
 	stsCredProvider, err := stscredentials.NewCredential(stsConf)
 	if err != nil {
 		return nil, err
@@ -100,11 +102,17 @@ func loadStsClient() (*sts.Client, error) {
 		AccessKeyId:     cred.AccessKeyId,
 		AccessKeySecret: cred.AccessKeySecret,
 		SecurityToken:   cred.SecurityToken,
-		Endpoint:        aws.String("sts-vpc.cn-shanghai.aliyuncs.com"),
+		Endpoint:        aws.String(endPoint),
 	})
 }
 
 func StartStsServer() {
+	utils.LoadConfig(configPath, map[string]*string{
+		"stsrolename": &stsRoleName,
+		"ossrole":     &ossRole,
+		"sessionname": &sessionName,
+		"endpoint":    &endPoint,
+	})
 	minStsReqIntvl := time.Second / time.Duration(maxReqTimesPerSec)
 	var stsClient *sts.Client = nil
 	for {
@@ -128,8 +136,8 @@ func StartStsServer() {
 				}
 			}
 			res, err = stsClient.AssumeRole(&sts.AssumeRoleRequest{
-				RoleArn:         aws.String(aliOssRole),
-				RoleSessionName: aws.String(aliSessionName),
+				RoleArn:         aws.String(ossRole),
+				RoleSessionName: aws.String(sessionName),
 				DurationSeconds: aws.Int64(900),
 				Policy:          aws.String(newPolicy(req.action, req.resource).ToString()),
 			})

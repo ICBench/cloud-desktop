@@ -23,17 +23,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	loUserName    string
-	serverHost    string
+const (
 	configPath    = "/usr/local/etc/dataPathClient/config.yaml"
 	caPoolPath    = "/usr/local/etc/dataPathClient/CApool"
 	crtFilePath   = "/usr/local/etc/dataPathClient/cert/client.crt"
 	keyFilePath   = "/usr/local/etc/dataPathClient/cert/client.key"
 	loPrivKeyPath = "/usr/local/etc/dataPathClient/privKey"
-	caPool        = x509.NewCertPool()
-	loPrivKey     = ed25519.PrivateKey{}
-	client        = &http.Client{}
+)
+
+var (
+	loUserName string
+	serverHost string
+	caPool     = x509.NewCertPool()
+	loPrivKey  = ed25519.PrivateKey{}
+	client     = &http.Client{}
 )
 
 func queryUserInfo() map[string]string {
@@ -100,11 +103,12 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 	json.Unmarshal(data["allowedapplist"], &allowedAppList)
 	json.Unmarshal(data["rejectedapplist"], &rejectedAppList)
 	json.Unmarshal(data["filelist"], &fileList)
-	var useIn = string(data["usein"]) == "true"
 	accessKeyId := string(data["accesskeyid"])
 	accessKeySecret := string(data["accesskeysecret"])
 	securityToken := string(data["securitytoken"])
-	ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, useIn)
+	endPoint := string(data["endpoint"])
+	region := string(data["region"])
+	ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, endPoint, region)
 	if ossClient == nil {
 		log.Println("Failed to create oss client.")
 		os.Exit(1)

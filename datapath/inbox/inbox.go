@@ -24,18 +24,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	loUserName    string
-	serverHost    string
+const (
 	configPath    = "/usr/local/etc/dataPathClient/config.yaml"
 	caPoolPath    = "/usr/local/etc/dataPathClient/CApool"
 	crtFilePath   = "/usr/local/etc/dataPathClient/cert/client.crt"
 	keyFilePath   = "/usr/local/etc/dataPathClient/cert/client.key"
 	loPrivKeyPath = "/usr/local/etc/dataPathClient/privKey"
-	caPool        = x509.NewCertPool()
-	client        = &http.Client{}
-	loPrivKey     = ed25519.PrivateKey{}
-	retryTime     = 10
+)
+
+var (
+	loUserName string
+	serverHost string
+	caPool     = x509.NewCertPool()
+	client     = &http.Client{}
+	loPrivKey  = ed25519.PrivateKey{}
 )
 
 func sendApplication(sendFileList []utils.AppFile, dst string) *http.Response {
@@ -100,12 +102,13 @@ func inbox(filePaths []string, dst string) {
 		log.Printf("Send application error: %v\n", err)
 		return
 	}
-	useIn := string(data["usein"]) == "true"
 	accessKeyId := string(data["accesskeyid"])
 	accessKeySecret := string(data["accesskeysecret"])
 	securityToken := string(data["securitytoken"])
+	endPoint := string(data["endpoint"])
+	region := string(data["region"])
+	ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, endPoint, region)
 	appId := string(data["appid"])
-	ossClient := utils.NewOssClient(accessKeyId, accessKeySecret, securityToken, useIn)
 	if ossClient == nil {
 		log.Println("Failed to create oss client.")
 		sendCancel(appId)

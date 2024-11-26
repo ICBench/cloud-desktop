@@ -29,12 +29,22 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-var (
+const (
 	configPath  = "/usr/local/etc/dataPathServer/config.yaml"
 	caPoolPath  = "/usr/local/etc/dataPathServer/CApool"
 	crtFilePath = "/usr/local/etc/dataPathServer/cert/server.crt"
 	keyFilePath = "/usr/local/etc/dataPathServer/cert/server.key"
-	pendingApp sync.Map
+)
+
+var (
+	caPool         = x509.NewCertPool()
+	dbClient       *sql.DB
+	ossBucket      string
+	ossInEndPoint  string
+	ossOutEndPoint string
+	region         string
+	sqlSource      string
+	pendingApp     sync.Map
 )
 
 type pendingAppInfo struct {
@@ -67,7 +77,7 @@ func loadCerts() {
 
 func connectDb() {
 	var err error
-	dbClient, err = sql.Open("mysql", "shizhao:icbench@tcp(127.0.0.1:3306)/data_path_server")
+	dbClient, err = sql.Open("mysql", sqlSource)
 	if err != nil {
 		journal.Print(journal.PriErr, "Invalid database parameter: %v\n", err)
 		os.Exit(1)
@@ -390,11 +400,11 @@ func inboxServer() error {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Create application error.")})
 			return
 		}
-		var useInStr string
+		var endPoint string
 		if !isOutside(src) {
-			useInStr = "true"
+			endPoint = ossInEndPoint
 		} else {
-			useInStr = "false"
+			endPoint = ossOutEndPoint
 		}
 		cred := aliutils.GetStsCred(aliutils.ActionPutObject, []string{}, ossBucket)
 		if cred.Err != nil {
@@ -407,7 +417,8 @@ func inboxServer() error {
 			"accesskeyid":     []byte(cred.AccessKeyId),
 			"accesskeysecret": []byte(cred.AccessKeySecret),
 			"securitytoken":   []byte(cred.SecurityToken),
-			"usein":           []byte(useInStr),
+			"endpoint":        []byte(endPoint),
+			"region":          []byte(region),
 			"ossbucket":       []byte(ossBucket),
 			"appid":           []byte(strconv.Itoa(appId)),
 			"warning":         warningBytes,
@@ -440,7 +451,7 @@ func inboxServer() error {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Sts server error.")})
 			return
 		}
-		ossClient := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, true)
+		ossClient := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, ossInEndPoint, region)
 		if ossClient == nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access oss server.")})
 			return
@@ -707,11 +718,11 @@ func outboxServer() error {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Sts server error.")})
 			return
 		}
-		var useInStr string
+		var endPoint string
 		if !isOutside(vpcId) {
-			useInStr = "true"
+			endPoint = ossInEndPoint
 		} else {
-			useInStr = "false"
+			endPoint = ossOutEndPoint
 		}
 		allowedAppListBytes, _ := json.Marshal(allowedAppList)
 		rejectedAppListBytes, _ := json.Marshal(rejectedAppList)
@@ -720,7 +731,8 @@ func outboxServer() error {
 			"accesskeyid":     []byte(cred.AccessKeyId),
 			"accesskeysecret": []byte(cred.AccessKeySecret),
 			"securitytoken":   []byte(cred.SecurityToken),
-			"usein":           []byte(useInStr),
+			"endpoint":        []byte(endPoint),
+			"region":          []byte(region),
 			"allowedapplist":  allowedAppListBytes,
 			"rejectedapplist": rejectedAppListBytes,
 			"filelist":        fileListBytes,
@@ -947,7 +959,7 @@ func fileTidy() {
 		journal.Print(journal.PriErr, "File tidy error: sts server error.")
 		return
 	}
-	ossClient := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, true)
+	ossClient := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, ossInEndPoint, region)
 	if ossClient == nil {
 		journal.Print(journal.PriErr, "File tidy error: failed to create oss client.")
 		return
@@ -964,7 +976,11 @@ func fileTidy() {
 
 func main() {
 	utils.LoadConfig(configPath, map[string]*string{
-		"ossbucket": &ossBucket,
+		"ossbucket":      &ossBucket,
+		"ossinendpoint":  &ossInEndPoint,
+		"ossoutendpoint": &ossOutEndPoint,
+		"region":         &region,
+		"sqlsource":      &sqlSource,
 	})
 	loadCerts()
 	connectDb()
