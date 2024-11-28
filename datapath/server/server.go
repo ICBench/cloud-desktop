@@ -25,6 +25,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/coreos/go-systemd/v22/journal"
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -102,8 +103,9 @@ func isAppStatAllow(status int) bool {
 }
 
 func createNewApplication(tx *sql.Tx, userKey ed25519.PublicKey, srcVpcId int, dstVpcId int, sendFileList []utils.AppFile, status int) (int, error) {
+	expTime := time.Now().AddDate(0, 30, 0)
 	user := parseUserFromKey(userKey)
-	ifce, err := utils.DbOpWithRetry(tx, "Exec", "INSERT INTO applications (owner,source_vpc_id,destination_vpc_id,approval_status) VALUES (?,?,?,?)", user, srcVpcId, dstVpcId, status)
+	ifce, err := utils.DbOpWithRetry(tx, "Exec", "INSERT INTO applications (owner,source_vpc_id,destination_vpc_id,approval_status,expiry_time) VALUES (?,?,?,?,?)", user, srcVpcId, dstVpcId, status, expTime)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to create new application: %v", err)
 		return 0, err
@@ -115,11 +117,6 @@ func createNewApplication(tx *sql.Tx, userKey ed25519.PublicKey, srcVpcId int, d
 		return 0, err
 	}
 	for _, sendFile := range sendFileList {
-		err := updateFileInfo(tx, sendFile.Hash)
-		if err != nil {
-			journal.Print(journal.PriErr, "Failed to update file info: %v", err)
-			return 0, err
-		}
 		_, err = utils.DbOpWithRetry(tx, "Exec", "INSERT INTO application_file (file_hash,application_id,file_info) VALUES (?,?,?)", sendFile.Hash, id, sendFile.RelPath)
 		if err != nil {
 			journal.Print(journal.PriErr, "Failed to create new application: %v", err)
@@ -127,12 +124,6 @@ func createNewApplication(tx *sql.Tx, userKey ed25519.PublicKey, srcVpcId int, d
 		}
 	}
 	return int(id), nil
-}
-
-func updateFileInfo(tx *sql.Tx, hash string) error {
-	expTime := time.Now().AddDate(0, 30, 0)
-	_, err := utils.DbOpWithRetry(tx, "Exec", "INSERT INTO files (hash,expiration_time) VALUES (?,?) ON DUPLICATE KEY UPDATE expiration_time=VALUES(expiration_time)", hash, expTime)
-	return err
 }
 
 func checkSign(dataBytes []byte, userName string, signature []byte) ed25519.PublicKey {
@@ -283,7 +274,7 @@ func reviewApp(tx *sql.Tx, idStr string, userKey ed25519.PublicKey, statusStr st
 	if err != nil {
 		return fmt.Errorf("user not found")
 	}
-	_, err = utils.DbOpWithRetry(tx, "Exec", "UPDATE applications SET approval_status=?,reviewer=? WHERE id=?", status, user, id)
+	_, err = utils.DbOpWithRetry(tx, "Exec", "UPDATE applications SET approval_status=? WHERE id=?", status, id)
 	if err != nil {
 		return fmt.Errorf("failed to update database")
 	}
@@ -1036,27 +1027,70 @@ func outboxServer() error {
 	return server.ListenAndServeTLS(crtFilePath, keyFilePath)
 }
 
-func fileTidy() {
+func deleteOssFile(idList []int) (failedIdList []int) {
+	cred := aliutils.GetStsCred("", []string{}, ossBucket)
+	if cred.Err != nil {
+		journal.Print(journal.PriErr, "File tidy error: sts server error.")
+		return idList
+	}
+	ossClient, err := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, ossInEndPoint, region)
+	if err != nil {
+		journal.Print(journal.PriErr, "File tidy error: failed to create oss client %v", err)
+		return idList
+	}
+	for _, id := range idList {
+		for {
+			res, err := ossClient.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+				Bucket: aws.String(ossBucket),
+				Prefix: aws.String(strconv.Itoa(id) + "/"),
+			})
+			if err != nil {
+				failedIdList = append(failedIdList, id)
+				break
+			}
+			var objs []types.ObjectIdentifier
+			for _, obj := range res.Contents {
+				objs = append(objs, types.ObjectIdentifier{
+					Key: obj.Key,
+				})
+			}
+			_, err = ossClient.DeleteObjects(context.Background(), &s3.DeleteObjectsInput{
+				Bucket: aws.String(ossBucket),
+				Delete: &types.Delete{
+					Objects: objs,
+				},
+			})
+			if err != nil {
+				failedIdList = append(failedIdList, id)
+				break
+			}
+			isTruncated := aws.ToBool(res.IsTruncated)
+			if !isTruncated {
+				break
+			}
+		}
+	}
+	return
+}
+
+func fileTidy(failedIdList []int) []int {
 	ifce, err := utils.DbOpWithRetry(dbClient, "Begin", "")
 	if err != nil {
 		journal.Print(journal.PriErr, "Error while trying to tidy files: %v\n", err)
-		return
+		return failedIdList
 	}
 	tx := ifce.(*sql.Tx)
 	ifce, err = utils.DbOpWithRetry(dbClient, "Query", "SELECT id FROM applications WHERE approval_status=2")
 	if err != nil {
 		journal.Print(journal.PriErr, "Error while trying to tidy files: %v\n", err)
-		return
+		return failedIdList
 	}
 	pendingAppRow := ifce.(*sql.Rows)
 	defer pendingAppRow.Close()
 	for pendingAppRow.Next() {
 		var id int
-		err = pendingAppRow.Scan(&id)
-		if err != nil {
-			journal.Print(journal.PriErr, "Error while trying to tidy files: %v\n", err)
-			return
-		}
+		pendingAppRow.Scan(&id)
+		failedIdList = append(failedIdList, id)
 		ifce, exist := pendingApp.Load(id)
 		if !exist {
 			_, err := utils.DbOpWithRetry(tx, "Exec", "DELETE FROM applications WHERE id = ?", id)
@@ -1075,58 +1109,24 @@ func fileTidy() {
 			pendingApp.Delete(id)
 		}
 	}
-	ifce, err = utils.DbOpWithRetry(dbClient, "Query", "SELECT hash FROM files WHERE expiration_time < ?", time.Now())
+	ifce, err = utils.DbOpWithRetry(dbClient, "Query", "SELECT id FROM applications WHERE expiry_time < ?", time.Now())
 	if err != nil {
 		journal.Print(journal.PriErr, "Error while trying to tidy files: %v\n", err)
-		return
+		return failedIdList
 	}
-	outdatedFileRow := ifce.(*sql.Rows)
-	defer outdatedFileRow.Close()
-	var delReqList = make(map[int]struct{})
-	var delFileList = make(map[string]struct{})
-	for outdatedFileRow.Next() {
-		var hash string
-		outdatedFileRow.Scan(&hash)
-		delFileList[hash] = struct{}{}
-		ifce, err = utils.DbOpWithRetry(dbClient, "Query", "SELECT application_id FROM application_file WHERE file_hash = ?", hash)
-		if err != nil {
-			journal.Print(journal.PriErr, "Error while trying to tidy applications: %v\n", err)
-			return
-		}
-		outdatedReqRow := ifce.(*sql.Rows)
-		defer outdatedReqRow.Close()
-		for outdatedReqRow.Next() {
-			var id int
-			outdatedReqRow.Scan(&id)
-			delReqList[id] = struct{}{}
-		}
+	outdatedAppRows := ifce.(*sql.Rows)
+	for outdatedAppRows.Next() {
+		var id int
+		outdatedAppRows.Scan(&id)
+		failedIdList = append(failedIdList, id)
 	}
-	for req := range delReqList {
-		_, err := utils.DbOpWithRetry(tx, "Exec", "DELETE FROM applications WHERE id = ?", req)
-		if err != nil {
-			journal.Print(journal.PriErr, "File tidy error: failed to access database.")
-			continue
-		}
-	}
-	cred := aliutils.GetStsCred("", []string{}, ossBucket)
-	if cred.Err != nil {
-		journal.Print(journal.PriErr, "File tidy error: sts server error.")
-		return
-	}
-	ossClient, err := utils.NewOssClient(cred.AccessKeyId, cred.AccessKeySecret, cred.SecurityToken, ossInEndPoint, region)
+	_, err = utils.DbOpWithRetry(tx, "Exec", "DELETE FROM applications WHERE expiry_time < ?", time.Now())
 	if err != nil {
-		journal.Print(journal.PriErr, "File tidy error: failed to create oss client %v", err)
-		return
+		journal.Print(journal.PriErr, "File tidy error: failed to access database.")
 	}
-	for file := range delFileList {
-		ossClient.DeleteObject(context.TODO(), &s3.DeleteObjectInput{Bucket: aws.String(ossBucket), Key: aws.String(file)})
-		_, err := utils.DbOpWithRetry(tx, "Exec", "DELETE FROM files WHERE hash = ?", file)
-		if err != nil {
-			journal.Print(journal.PriErr, "File tidy error: failed to access database.")
-			continue
-		}
-	}
+	failedIdList = deleteOssFile(failedIdList)
 	utils.DbOpWithRetry(tx, "Commit", "")
+	return failedIdList
 }
 
 func main() {
@@ -1156,8 +1156,9 @@ func main() {
 			}
 		}
 	}()
+	var tidyIdList = []int{}
 	for {
-		fileTidy()
+		tidyIdList = fileTidy(tidyIdList)
 		time.Sleep(24 * time.Hour)
 	}
 }
