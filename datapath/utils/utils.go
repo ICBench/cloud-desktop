@@ -7,18 +7,22 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"math/big"
+	mathrand "math/rand"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -31,6 +35,12 @@ import (
 const (
 	PerReview = 1 << 1
 	PerAdmin  = 1 << 2
+)
+
+var (
+	maxRetryTimes = 10
+	maxRetrySec   = 60
+	iniRetrySec   = 1
 )
 
 type AppFile struct {
@@ -228,4 +238,60 @@ func LoadConfig(confPath string, confList map[string]*string) {
 		}
 		*value = ifce.(string)
 	}
+}
+
+func DbOpWithRetry(client interface{}, op string, query string, args ...any) (result interface{}, err error) {
+	maxDuration := iniRetrySec
+	var dbClient *sql.DB = nil
+	var tx *sql.Tx = nil
+	var ok bool
+	switch op {
+	case "Ping", "Begin":
+		dbClient, ok = client.(*sql.DB)
+	case "Exec", "Rollback", "Commit":
+		tx, ok = client.(*sql.Tx)
+	case "Query":
+		tx, ok = client.(*sql.Tx)
+		if !ok {
+			dbClient, ok = client.(*sql.DB)
+		}
+	default:
+		err = fmt.Errorf("unsupported operation")
+		return
+	}
+	if !ok {
+		err = fmt.Errorf("invalid client")
+		return
+	}
+	for i := 1; i <= maxRetryTimes; i++ {
+		switch op {
+		case "Ping":
+			err = dbClient.Ping()
+		case "Begin":
+			result, err = dbClient.Begin()
+		case "Query":
+			if dbClient != nil {
+				result, err = dbClient.Query(query, args...)
+			} else {
+				result, err = tx.Query(query, args...)
+			}
+		case "Exec":
+			result, err = tx.Exec(query, args...)
+		case "Rollback":
+			err = tx.Rollback()
+		case "Commit":
+			err = tx.Commit()
+		}
+		if err != nil {
+			if i == maxRetryTimes {
+				return
+			}
+			maxDuration = min(maxDuration*2, maxRetrySec)
+			sleepSec := mathrand.Intn(maxDuration/2) + maxDuration/2
+			time.Sleep(time.Second * time.Duration(sleepSec))
+		} else {
+			break
+		}
+	}
+	return
 }
