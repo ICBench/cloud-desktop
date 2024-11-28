@@ -114,6 +114,7 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 		os.Exit(1)
 	}
 	downloader := manager.NewDownloader(ossClient)
+	basePath = filepath.Clean(basePath) + "/"
 	for id, app := range fileList {
 		appSavePath := basePath + id + "/"
 		err := os.MkdirAll(appSavePath, 0755)
