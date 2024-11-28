@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	configPath    = "/usr/local/etc/dataPathClient/config.yaml"
+	configPath    = "/usr/local/etc/dataPathClient/config.toml"
 	caPoolPath    = "/usr/local/etc/dataPathClient/CApool"
 	crtFilePath   = "/usr/local/etc/dataPathClient/cert/client.crt"
 	keyFilePath   = "/usr/local/etc/dataPathClient/cert/client.key"

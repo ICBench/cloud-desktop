@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	configPath  = "/usr/local/etc/dataPathServer/config.yaml"
+	configPath  = "/usr/local/etc/dataPathServer/config.toml"
 	caPoolPath  = "/usr/local/etc/dataPathServer/CApool"
 	crtFilePath = "/usr/local/etc/dataPathServer/cert/server.crt"
 	keyFilePath = "/usr/local/etc/dataPathServer/cert/server.key"

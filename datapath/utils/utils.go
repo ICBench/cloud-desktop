@@ -24,12 +24,12 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/coreos/go-systemd/v22/journal"
-	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -225,7 +225,7 @@ func LoadConfig(confPath string, confList map[string]*string) {
 		os.Exit(1)
 	}
 	config := make(map[string]interface{})
-	err = yaml.Unmarshal(configBytes, config)
+	err = toml.Unmarshal(configBytes, &config)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to parse the config file: %v.", err)
 		os.Exit(1)

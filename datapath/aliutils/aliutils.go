@@ -24,7 +24,7 @@ const (
 	ActionListParts            = "oss:ListParts"
 	ActionAll                  = "oss:*"
 	ResourceHead               = "acs:oss:*:*:"
-	configPath                 = "/usr/local/etc/dataPathServer/aliConfig.yaml"
+	configPath                 = "/usr/local/etc/dataPathServer/aliConfig.toml"
 )
 
 var (
