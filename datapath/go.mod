@@ -3,6 +3,7 @@ module datapath
 go 1.23.0
 
 require (
+	github.com/BurntSushi/toml v1.4.0
 	github.com/alibabacloud-go/darabonba-openapi/v2 v2.0.2
 	github.com/alibabacloud-go/sts-20150401/v2 v2.0.2
 	github.com/alibabacloud-go/tea v1.2.2
@@ -15,7 +16,6 @@ require (
 	github.com/coreos/go-systemd/v22 v22.5.0
 	github.com/schollz/progressbar/v3 v3.17.1
 	github.com/spf13/cobra v1.8.1
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
