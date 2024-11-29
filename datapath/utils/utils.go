@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -240,58 +241,108 @@ func LoadConfig(confPath string, confList map[string]*string) {
 	}
 }
 
-func DbOpWithRetry(client interface{}, op string, query string, args ...any) (result interface{}, err error) {
+func TxBegin(db *sql.DB) (tx *sql.Tx, err error) {
 	maxDuration := iniRetrySec
-	var dbClient *sql.DB = nil
-	var tx *sql.Tx = nil
-	var ok bool
-	switch op {
-	case "Ping", "Begin":
-		dbClient, ok = client.(*sql.DB)
-	case "Exec", "Rollback", "Commit":
-		tx, ok = client.(*sql.Tx)
-	case "Query":
-		tx, ok = client.(*sql.Tx)
-		if !ok {
-			dbClient, ok = client.(*sql.DB)
-		}
-	default:
-		err = fmt.Errorf("unsupported operation")
-		return
-	}
-	if !ok {
-		err = fmt.Errorf("invalid client")
-		return
-	}
 	for i := 1; i <= maxRetryTimes; i++ {
-		switch op {
-		case "Ping":
-			err = dbClient.Ping()
-		case "Begin":
-			result, err = dbClient.Begin()
-		case "Query":
-			if dbClient != nil {
-				result, err = dbClient.Query(query, args...)
-			} else {
-				result, err = tx.Query(query, args...)
-			}
-		case "Exec":
-			result, err = tx.Exec(query, args...)
-		case "Rollback":
-			err = tx.Rollback()
-		case "Commit":
-			err = tx.Commit()
-		}
-		if err != nil {
-			if i == maxRetryTimes {
-				return
-			}
-			maxDuration = min(maxDuration*2, maxRetrySec)
-			sleepSec := mathrand.Intn(maxDuration/2) + maxDuration/2
-			time.Sleep(time.Second * time.Duration(sleepSec))
-		} else {
+		tx, err = db.Begin()
+		if err == nil {
 			break
 		}
+		if i == maxRetryTimes || errors.Is(err, sql.ErrConnDone) {
+			return nil, err
+		}
+		maxDuration = min(maxDuration*2, maxRetrySec)
+		sleepSec := mathrand.Intn(maxDuration/2) + maxDuration/2
+		time.Sleep(time.Second * time.Duration(sleepSec))
 	}
 	return
+}
+
+func TxOp(tx *sql.Tx, op string) (err error) {
+	maxDuration := iniRetrySec
+	for i := 1; i <= maxRetryTimes; i++ {
+		switch op {
+		case "Commit":
+			err = tx.Commit()
+		case "Rollback":
+			err = tx.Rollback()
+		default:
+			err = fmt.Errorf("invalid operation")
+		}
+		if err == nil || errors.Is(err, sql.ErrTxDone) {
+			break
+		}
+		if i == maxRetryTimes {
+			return err
+		}
+		maxDuration = min(maxDuration*2, maxRetrySec)
+		sleepSec := mathrand.Intn(maxDuration/2) + maxDuration/2
+		time.Sleep(time.Second * time.Duration(sleepSec))
+	}
+	return nil
+}
+
+func TxQuery(tx *sql.Tx, query string, args ...any) (rows *sql.Rows, err error) {
+	maxDuration := iniRetrySec
+	for i := 1; i <= maxRetryTimes; i++ {
+		rows, err = tx.Query(query, args...)
+		if err == nil {
+			break
+		}
+		if i == maxRetryTimes || errors.Is(err, sql.ErrTxDone) {
+			return nil, err
+		}
+		maxDuration = min(maxDuration*2, maxRetrySec)
+		sleepSec := mathrand.Intn(maxDuration/2) + maxDuration/2
+		time.Sleep(time.Second * time.Duration(sleepSec))
+	}
+	return
+}
+
+func DbQuery(db *sql.DB, query string, args ...any) (rows *sql.Rows, err error) {
+	maxDuration := iniRetrySec
+	for i := 1; i <= maxRetryTimes; i++ {
+		rows, err = db.Query(query, args...)
+		if err == nil {
+			break
+		}
+		if i == maxRetryTimes || errors.Is(err, sql.ErrConnDone) {
+			return nil, err
+		}
+		maxDuration = min(maxDuration*2, maxRetrySec)
+		sleepSec := mathrand.Intn(maxDuration/2) + maxDuration/2
+		time.Sleep(time.Second * time.Duration(sleepSec))
+	}
+	return
+}
+
+func DbExec(db *sql.DB, query string, args ...any) (result sql.Result, err error) {
+	var tx *sql.Tx
+	maxDuration := iniRetrySec
+	for i := 1; i <= maxRetryTimes; i++ {
+		tx, err = TxBegin(db)
+		if err != nil {
+			return nil, err
+		}
+		result, err = tx.Exec(query, args...)
+		if err == nil {
+			break
+		}
+		txErr := TxOp(tx, "Rollback")
+		if i == maxRetryTimes || errors.Is(err, sql.ErrConnDone) {
+			return nil, err
+		}
+		if txErr != nil {
+			return nil, txErr
+		}
+		maxDuration = min(maxDuration*2, maxRetrySec)
+		sleepSec := mathrand.Intn(maxDuration/2) + maxDuration/2
+		time.Sleep(time.Second * time.Duration(sleepSec))
+	}
+	txErr := TxOp(tx, "Commit")
+	if txErr != nil {
+		TxOp(tx, "Rollback")
+		return nil, txErr
+	}
+	return result, nil
 }
