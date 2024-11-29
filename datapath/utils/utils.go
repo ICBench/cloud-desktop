@@ -268,18 +268,19 @@ func TxOp(tx *sql.Tx, op string) (err error) {
 			err = tx.Rollback()
 		default:
 			err = fmt.Errorf("invalid operation")
+			return
 		}
-		if err == nil || errors.Is(err, sql.ErrTxDone) {
+		if err == nil {
 			break
 		}
-		if i == maxRetryTimes {
+		if i == maxRetryTimes || errors.Is(err, sql.ErrTxDone) {
 			return err
 		}
 		maxDuration = min(maxDuration*2, maxRetrySec)
 		sleepSec := mathrand.Intn(maxDuration/2) + maxDuration/2
 		time.Sleep(time.Second * time.Duration(sleepSec))
 	}
-	return nil
+	return
 }
 
 func TxQuery(tx *sql.Tx, query string, args ...any) (rows *sql.Rows, err error) {
@@ -329,7 +330,7 @@ func DbExec(db *sql.DB, query string, args ...any) (result sql.Result, err error
 			break
 		}
 		txErr := TxOp(tx, "Rollback")
-		if i == maxRetryTimes || errors.Is(err, sql.ErrConnDone) {
+		if i == maxRetryTimes || errors.Is(err, sql.ErrConnDone) || errors.Is(err, sql.ErrTxDone) {
 			return nil, err
 		}
 		if txErr != nil {
