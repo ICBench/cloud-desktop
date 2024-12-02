@@ -244,7 +244,7 @@ func main() {
 				jsonBytes, _ := json.Marshal(data)
 				fmt.Println(string(jsonBytes))
 			} else {
-				fmt.Printf("Username: %v\nPermissions: %v\nVPC: %v", data["username"], data["permission"], data["vpc"])
+				fmt.Printf("Username: %v\nPermissions: %v\nVPC: %v\n", data["username"], data["permission"], data["vpc"])
 			}
 		},
 	}
@@ -258,9 +258,13 @@ func main() {
 				jsonBytes, _ := json.Marshal(appList)
 				fmt.Println(string(jsonBytes))
 			} else {
-				fmt.Printf("%8v %15v %15v %15v %7v\n", "id", "user", "src", "dst", "status")
-				for _, app := range appList {
-					fmt.Printf("%8v %15v %15v %15v %7v\n", app.Id, app.User, app.Src, app.Dst, app.Status)
+				if len(appList) <= 0 {
+					fmt.Println("No application.")
+				} else {
+					fmt.Printf("%8v %15v %15v %15v %7v\n", "id", "user", "src", "dst", "status")
+					for _, app := range appList {
+						fmt.Printf("%8v %15v %15v %15v %7v\n", app.Id, app.User, app.Src, app.Dst, app.Status)
+					}
 				}
 			}
 		},
@@ -374,9 +378,13 @@ func main() {
 				jsonBytes, _ := json.Marshal(vpcList)
 				fmt.Println(string(jsonBytes))
 			} else {
-				fmt.Printf("%5v %20v %20v\n", "ID", "VPC name", "CIDR")
-				for _, info := range vpcList {
-					fmt.Printf("%5v %20v %20v\n", info.Id, info.Name, info.Cidr)
+				if len(vpcList) <= 0 {
+					fmt.Println("No VPC.")
+				} else {
+					fmt.Printf("%5v %20v %20v\n", "ID", "VPC name", "CIDR")
+					for _, info := range vpcList {
+						fmt.Printf("%5v %20v %20v\n", info.Id, info.Name, info.Cidr)
+					}
 				}
 			}
 		},
