@@ -168,7 +168,7 @@ func getVpcIdByName(vpcName string) (int, error) {
 	if vpcRows.Next() {
 		vpcRows.Scan(&id)
 	} else {
-		id = 0
+		return 0, fmt.Errorf("no such VPC")
 	}
 	return id, nil
 }
@@ -372,7 +372,7 @@ func inboxServer() error {
 		}
 		dst, err := getVpcIdByName(dstStr)
 		if err != nil {
-			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte(err.Error())})
 			return
 		}
 		if dst == -1 {
