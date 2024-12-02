@@ -53,10 +53,8 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 		"/usr/bin/x2gokdrive",
 		"/usr/bin/x2gokdriveclient",
 		"/usr/bin/x2golistdesktops",
-		"/usr/bin/x2golistmounts",
 		"/usr/bin/x2golistsessions",
 		"/usr/bin/x2golistshadowsessions",
-		"/usr/bin/x2gomountdirs",
 		"/usr/bin/x2gooptionsstring",
 		"/usr/bin/x2gopath",
 		"/usr/bin/x2goprint",
@@ -68,7 +66,6 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 		"/usr/bin/x2gostartagent",
 		"/usr/bin/x2gosuspend-session",
 		"/usr/bin/x2goterminate-session",
-		"/usr/bin/x2goumount-session",
 		"/usr/bin/x2goversion":
 		allow = true
 		return
