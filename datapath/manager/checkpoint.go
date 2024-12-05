@@ -103,7 +103,7 @@ func newDownloadCheckpoint(request *s3.GetObjectInput, filePath string, baseDir 
 // load checkpoint from local file
 func (cp *downloadCheckpoint) load() error {
 	if !DirExists(cp.CpDirPath) {
-		return fmt.Errorf("Invaid checkpoint dir, %v", cp.CpDirPath)
+		return fmt.Errorf("invaid checkpoint dir, %v", cp.CpDirPath)
 	}
 
 	if !FileExists(cp.CpFilePath) {

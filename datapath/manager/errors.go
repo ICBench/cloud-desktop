@@ -48,3 +48,10 @@ func NewErrParamNull(field string) InvalidParamError {
 		reason: "null field",
 	}
 }
+
+func NewErrParamInvalid(field string) InvalidParamError {
+	return &invalidParamError{
+		field:  field,
+		reason: "invalid field",
+	}
+}

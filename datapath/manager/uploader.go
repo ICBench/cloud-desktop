@@ -456,7 +456,6 @@ func (u *uploaderDelegate) multiPart() (*UploadResult, error) {
 						RequestPayer: u.request.RequestPayer,
 					},
 					u.options.ClientOptions...)
-				//fmt.Printf("UploadPart result: %#v, %#v\n", upResult, err)
 
 				if err == nil {
 					mu.Lock()

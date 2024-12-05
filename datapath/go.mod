@@ -8,7 +8,7 @@ require (
 	github.com/alibabacloud-go/sts-20150401/v2 v2.0.2
 	github.com/alibabacloud-go/tea v1.2.2
 	github.com/aliyun/credentials-go v1.4.2
-	github.com/aws/aws-sdk-go-v2 v1.32.4
+	github.com/aws/aws-sdk-go-v2 v1.32.6
 	github.com/aws/aws-sdk-go-v2/config v1.28.4
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.45
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.17.38
@@ -40,7 +40,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.24.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.28.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.33.0 // indirect
-	github.com/aws/smithy-go v1.22.0 // indirect
+	github.com/aws/smithy-go v1.22.1 // indirect
 	github.com/clbanning/mxj/v2 v2.5.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect

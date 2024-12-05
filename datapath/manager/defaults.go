@@ -19,6 +19,8 @@ const (
 
 	CheckpointFileSuffixUploader = ".ucp"
 
+	TempFileSuffix = ".temp"
+
 	CheckpointMagic = "92611BED-89E2-46B6-89E5-72F273D4B0A3"
 
 	FilePermMode = os.FileMode(0664)

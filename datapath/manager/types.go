@@ -2,7 +2,9 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
@@ -10,6 +12,18 @@ import (
 type HTTPRange struct {
 	Offset int64
 	Count  int64
+}
+
+func (r HTTPRange) FormatHTTPRange() *string {
+	if r.Offset == 0 && r.Count == 0 {
+		return nil // No specified range
+	}
+	endOffset := "" // if count == CountToEnd (0)
+	if r.Count > 0 {
+		endOffset = strconv.FormatInt((r.Offset+r.Count)-1, 10)
+	}
+	dataRange := fmt.Sprintf("bytes=%v-%s", r.Offset, endOffset)
+	return &dataRange
 }
 
 type UploaderClient interface {
