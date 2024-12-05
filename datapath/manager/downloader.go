@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"net/http"
 	"os"
@@ -187,9 +186,9 @@ func (u *downloaderDelegate) wrapErr(err error) error {
 }
 
 func (d *downloaderDelegate) checkSource() error {
-	var request s3.HeadObjectInput
-	copyRequest(&request, d.request)
-	result, err := d.client.HeadObject(d.context, &request, d.options.ClientOptions...)
+	var request = new(s3.HeadObjectInput)
+	copyRequest(request, d.request)
+	result, err := d.client.HeadObject(d.context, request, d.options.ClientOptions...)
 	if err != nil {
 		return err
 	}
@@ -320,7 +319,7 @@ func (c *downloaderChunk) Write(p []byte) (n int, err error) {
 type downloadedChunk struct {
 	start int64
 	size  int64
-	crc64 uint64
+	// crc64 uint64
 }
 
 type ReaderRangeGetOutput struct {
@@ -482,10 +481,10 @@ func NewRangeReader(ctx context.Context, rangeGet ReaderRangeGetFn, httpRange *H
 	return a, nil
 }
 
-func (d *downloaderDelegate) downloadChunk(chunk downloaderChunk, hash hash.Hash64) (downloadedChunk, error) {
+func (d *downloaderDelegate) downloadChunk(chunk downloaderChunk /*, hash hash.Hash64*/) (downloadedChunk, error) {
 	// Get the next byte range of data
-	var request s3.GetObjectInput
-	copyRequest(&request, d.request)
+	var request = new(s3.GetObjectInput)
+	copyRequest(request, d.request)
 
 	getFn := func(ctx context.Context, httpRange HTTPRange) (output *ReaderRangeGetOutput, err error) {
 		// update range
@@ -495,7 +494,7 @@ func (d *downloaderDelegate) downloadChunk(chunk downloaderChunk, hash hash.Hash
 			request.Range = rangeStr
 		}
 
-		result, err := d.client.GetObject(ctx, &request, d.options.ClientOptions...)
+		result, err := d.client.GetObject(ctx, request, d.options.ClientOptions...)
 		if err != nil {
 			return nil, err
 		}
@@ -512,24 +511,24 @@ func (d *downloaderDelegate) downloadChunk(chunk downloaderChunk, hash hash.Hash
 	defer reader.Close()
 
 	var (
-		r     io.Reader = reader
-		crc64 uint64    = 0
+		r io.Reader = reader
+		// crc64 uint64    = 0
 	)
-	if hash != nil {
-		hash.Reset()
-		r = io.TeeReader(reader, hash)
-	}
+	// if hash != nil {
+	// 	hash.Reset()
+	// 	r = io.TeeReader(reader, hash)
+	// }
 
 	n, err := io.Copy(&chunk, r)
 
-	if hash != nil {
-		crc64 = hash.Sum64()
-	}
+	// if hash != nil {
+	// 	crc64 = hash.Sum64()
+	// }
 
 	return downloadedChunk{
 		start: chunk.start,
 		size:  n,
-		crc64: crc64,
+		// crc64: crc64,
 	}, err
 }
 
@@ -560,7 +559,7 @@ func (d *downloaderDelegate) download() (*DownloadResult, error) {
 	// writeChunkFn runs in worker goroutines to pull chunks off of the ch channel
 	writeChunkFn := func(ch chan downloaderChunk) {
 		defer wg.Done()
-		var hash hash.Hash64
+		// var hash hash.Hash64
 		// if d.calcCRC {
 		// 	hash = NewCRC64(0)
 		// }
@@ -575,7 +574,7 @@ func (d *downloaderDelegate) download() (*DownloadResult, error) {
 				continue
 			}
 
-			dchunk, derr := d.downloadChunk(chunk, hash)
+			dchunk, derr := d.downloadChunk(chunk /*, hash*/)
 
 			if derr != nil && derr != io.EOF {
 				saveErrFn(derr)

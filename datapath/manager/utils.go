@@ -198,22 +198,25 @@ func seekerLen(s io.Seeker) (int64, error) {
 	return endOffset - curOffset, nil
 }
 
-func GetReaderLen(r io.Reader) int64 {
+func GetReaderLen(r io.Reader) (int64, error) {
+	if r == nil {
+		return 0, fmt.Errorf("the body is null")
+	}
 	type lenner interface {
 		Len() int
 	}
 
 	if lr, ok := r.(lenner); ok {
-		return int64(lr.Len())
+		return int64(lr.Len()), nil
 	}
 
 	if s, ok := r.(io.Seeker); ok {
 		if l, err := seekerLen(s); err == nil {
-			return l
+			return l, nil
 		}
 	}
 
-	return -1
+	return 0, fmt.Errorf("the body is null")
 }
 
 func copyRequest(dst, src interface{}) {

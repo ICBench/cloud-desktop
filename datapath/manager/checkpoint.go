@@ -314,36 +314,36 @@ func (cp *uploadCheckpoint) valid() bool {
 		return false
 	}
 
-	dcp := uploadCheckpoint{}
+	ucp := uploadCheckpoint{}
 
-	if err = json.Unmarshal(contents, &dcp.Info); err != nil {
+	if err = json.Unmarshal(contents, &ucp.Info); err != nil {
 		return false
 	}
 
-	js, _ := json.Marshal(dcp.Info.Data)
+	js, _ := json.Marshal(ucp.Info.Data)
 	sum := md5.Sum(js)
 	md5sum := hex.EncodeToString(sum[:])
 
-	if CheckpointMagic != dcp.Info.Magic ||
-		md5sum != dcp.Info.MD5 {
+	if CheckpointMagic != ucp.Info.Magic ||
+		md5sum != ucp.Info.MD5 {
 		return false
 	}
 
 	// compare
-	if !reflect.DeepEqual(cp.Info.Data.ObjectInfo, dcp.Info.Data.ObjectInfo) ||
-		!reflect.DeepEqual(cp.Info.Data.FileMeta, dcp.Info.Data.FileMeta) ||
-		cp.Info.Data.FilePath != dcp.Info.Data.FilePath ||
-		cp.Info.Data.PartSize != dcp.Info.Data.PartSize {
+	if !reflect.DeepEqual(cp.Info.Data.ObjectInfo, ucp.Info.Data.ObjectInfo) ||
+		!reflect.DeepEqual(cp.Info.Data.FileMeta, ucp.Info.Data.FileMeta) ||
+		cp.Info.Data.FilePath != ucp.Info.Data.FilePath ||
+		cp.Info.Data.PartSize != ucp.Info.Data.PartSize {
 		return false
 	}
 
 	// download info
-	if len(dcp.Info.Data.UploadInfo.UploadId) == 0 {
+	if len(ucp.Info.Data.UploadInfo.UploadId) == 0 {
 		return false
 	}
 
 	// update
-	cp.Info.Data.UploadInfo = dcp.Info.Data.UploadInfo
+	cp.Info.Data.UploadInfo = ucp.Info.Data.UploadInfo
 
 	return true
 }

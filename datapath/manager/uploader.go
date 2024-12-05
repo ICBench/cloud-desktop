@@ -145,11 +145,10 @@ func (u *uploaderDelegate) checkSource(filePath string) error {
 }
 
 func (u *uploaderDelegate) applySource() error {
-	if u.body == nil {
+	totalSize, err := GetReaderLen(u.body)
+	if err != nil {
 		return NewErrParamNull("the body is null")
 	}
-
-	totalSize := GetReaderLen(u.body)
 
 	//Part Size
 	partSize := u.options.PartSize
