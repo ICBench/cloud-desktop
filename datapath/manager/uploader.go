@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/schollz/progressbar/v3"
 )
 
 type UploaderOptions struct {
@@ -97,6 +98,7 @@ func (u *Uploader) UploadFile(ctx context.Context, request *s3.PutObjectInput, f
 		return nil, err
 	}
 
+	delegate.processBar = progressbar.DefaultBytes(delegate.totalSize, fmt.Sprintf("Uploading %v", delegate.fileInfo.Name()))
 	result, err := delegate.upload()
 	return result, delegate.closeReader(file, err)
 }
@@ -113,7 +115,8 @@ type uploaderDelegate struct {
 	readerPos int64
 	totalSize int64
 	// hashCRC64   uint64
-	// transferred int64
+	transferred int64
+	processBar  *progressbar.ProgressBar
 
 	filePath string
 	fileInfo os.FileInfo
@@ -467,6 +470,8 @@ func (u *uploaderDelegate) multiPart() (*UploadResult, error) {
 					// 	u.transferred += int64(data.size)
 					// 	u.request.ProgressFn(int64(data.size), u.transferred, u.totalSize)
 					// }
+					u.transferred += int64(data.size)
+					u.processBar.Add64(int64(data.size))
 					mu.Unlock()
 				} else {
 					saveErrFn(err)
@@ -497,6 +502,8 @@ func (u *uploaderDelegate) multiPart() (*UploadResult, error) {
 		// 	u.transferred = u.readerPos
 		// 	u.request.ProgressFn(u.readerPos, u.transferred, u.totalSize)
 		// }
+		u.transferred = u.readerPos
+		u.processBar.Set64(u.transferred)
 	}
 
 	for getErrFn() == nil && qerr == nil {

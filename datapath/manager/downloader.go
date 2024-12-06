@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/schollz/progressbar/v3"
 )
 
 type DownloaderOptions struct {
@@ -123,6 +124,7 @@ func (d *Downloader) DownloadFile(ctx context.Context, request *s3.GetObjectInpu
 	// CRC Part
 	// delegate.updateCRCFlag()
 
+	delegate.processBar = progressbar.DefaultBytes(delegate.sizeInBytes, fmt.Sprintf("Downloading %v", delegate.filePath))
 	// download
 	result, err = delegate.download()
 
@@ -160,6 +162,9 @@ type downloaderDelegate struct {
 	pos     int64
 	epos    int64
 	written int64
+
+	processBar *progressbar.ProgressBar
+	m          sync.Mutex
 
 	// Source's Info
 	sizeInBytes int64
@@ -481,6 +486,15 @@ func NewRangeReader(ctx context.Context, rangeGet ReaderRangeGetFn, httpRange *H
 	return a, nil
 }
 
+func (d *downloaderDelegate) incrWritten(n int64) {
+	d.m.Lock()
+	defer d.m.Unlock()
+	d.written += n
+	if n > 0 {
+		d.processBar.Add64(n)
+	}
+}
+
 func (d *downloaderDelegate) downloadChunk(chunk downloaderChunk /*, hash hash.Hash64*/) (downloadedChunk, error) {
 	// Get the next byte range of data
 	var request = new(s3.GetObjectInput)
@@ -520,6 +534,7 @@ func (d *downloaderDelegate) downloadChunk(chunk downloaderChunk /*, hash hash.H
 	// }
 
 	n, err := io.Copy(&chunk, r)
+	d.incrWritten(n)
 
 	// if hash != nil {
 	// 	crc64 = hash.Sum64()
@@ -649,9 +664,9 @@ func (d *downloaderDelegate) download() (*DownloadResult, error) {
 	}
 
 	// Consume downloaded data
-	// if d.request.ProgressFn != nil && d.written > 0 {
-	// 	d.request.ProgressFn(d.written, d.written, d.sizeInBytes)
-	// }
+	if d.written > 0 {
+		d.processBar.Set64(d.written)
+	}
 
 	// Queue the next range of bytes to read.
 	for getErrFn() == nil {
