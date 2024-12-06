@@ -2,8 +2,7 @@ package main
 
 import (
 	"archive/zip"
-	"crypto"
-	"crypto/rsa"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -38,7 +37,7 @@ var (
 	dryRun          = false
 	confPath        = "/usr/local/etc/"
 	confName        = "watchdog.conf"
-	publicKeyBytes  = []byte("-----BEGIN PUBLIC KEY-----\nMIIBCgKCAQEArqMEYheq+c4eFWFJbVuVq8FRn53IMqpssL/5b6SJ/zddiyOG9LeC\nt7bYjEQkYo4KN/dYIayQ8KDHJXfCxnsl+438m8/4rkQE3G+M8dICwoiHNYPxEzVe\nFKVM158aFmONTQbjZfGHKQAR0O6iDkLckL1Stiwxekt+09Yl8bjzM1we4FBbOoq5\npwJxCLnhlctQvj/pPSJQ2pkxPRR7qp/6exafSRPnj03F4FmoKGqccs4+H9RK/7S+\n94jRYvPktpolvOcfoVLF8r8QN8/fOMhznmhFm86l1opVpwNUajvWRJOKFeRc4Yns\nIbs+o8tqm2hSs1ITgM9zbNTdgQ360QgzrwIDAQAB\n-----END PUBLIC KEY-----\n")
+	publicKeyBytes  = []byte("-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEApA2AzKpISfVZZB4VEYYLwomjBsMxhAGjFKtO55Wqcms=\n-----END PUBLIC KEY-----\n")
 )
 
 func freeze() {
@@ -96,21 +95,25 @@ func checkSign(confByte []byte, signature string) {
 		freeze()
 		return
 	}
-	publicKey, err := x509.ParsePKCS1PublicKey(block.Bytes)
+	publicKeyIfce, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
 		journal.Print(journal.PriAlert, "Parse public key failed: %v\n", err)
 		freeze()
 		return
 	}
-	hash := sha256.Sum256(confByte)
+	publicKey, ok := publicKeyIfce.(ed25519.PublicKey)
+	if !ok {
+		journal.Print(journal.PriAlert, "Parse public key failed: %v\n", err)
+		freeze()
+		return
+	}
 	signbytes, err := hex.DecodeString(signature)
 	if err != nil {
 		journal.Print(journal.PriAlert, "Decode signayure failed: %v\n", err)
 		freeze()
 		return
 	}
-	err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hash[:], signbytes)
-	if err != nil {
+	if !ed25519.Verify(publicKey, confByte, signbytes) {
 		journal.Print(journal.PriAlert, "Signature authentication failed: %v\n", err)
 		freeze()
 		return
