@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -114,7 +114,7 @@ func getConfig(inputPath, outputPath string) {
 			log.Printf("Access %v error: %v\n", inputPath, err)
 			os.Exit(-1)
 		}
-		yaml.Unmarshal(inputByte, &oldConf)
+		toml.Unmarshal(inputByte, &oldConf)
 	}
 
 	var conf = make(map[string]map[string]struct{})
@@ -179,7 +179,7 @@ func getConfig(inputPath, outputPath string) {
 		newConf.Data = append(newConf.Data, newFileConf)
 	}
 	newConf.DryRun = false
-	outputByte, err := yaml.Marshal(newConf)
+	outputByte, err := toml.Marshal(newConf)
 	if err != nil {
 		log.Printf("Marshal config err: %v", err)
 		os.Exit(-1)
@@ -201,7 +201,7 @@ func main() {
 		},
 	}
 	rootCmd.Flags().StringVarP(&inputPath, "input", "i", "", "Specify input file path, usually the old config file")
-	rootCmd.Flags().StringVarP(&outputPath, "output", "o", "watchdog.yaml", "Specify output file path")
+	rootCmd.Flags().StringVarP(&outputPath, "output", "o", "watchdog.toml", "Specify output file path")
 	var completion = &cobra.Command{
 		Use: "completion",
 	}
