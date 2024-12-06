@@ -124,7 +124,6 @@ func (d *Downloader) DownloadFile(ctx context.Context, request *s3.GetObjectInpu
 	// CRC Part
 	// delegate.updateCRCFlag()
 
-	delegate.processBar = progressbar.DefaultBytes(delegate.sizeInBytes, fmt.Sprintf("Downloading %v", delegate.filePath))
 	// download
 	result, err = delegate.download()
 
@@ -548,6 +547,8 @@ func (d *downloaderDelegate) downloadChunk(chunk downloaderChunk /*, hash hash.H
 }
 
 func (d *downloaderDelegate) download() (*DownloadResult, error) {
+	d.processBar = progressbar.DefaultBytes(d.sizeInBytes, fmt.Sprintf("Downloading %v", d.filePath))
+	defer d.processBar.Finish()
 	var (
 		wg       sync.WaitGroup
 		errValue atomic.Value

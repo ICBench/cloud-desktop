@@ -98,7 +98,6 @@ func (u *Uploader) UploadFile(ctx context.Context, request *s3.PutObjectInput, f
 		return nil, err
 	}
 
-	delegate.processBar = progressbar.DefaultBytes(delegate.totalSize, fmt.Sprintf("Uploading %v", delegate.fileInfo.Name()))
 	result, err := delegate.upload()
 	return result, delegate.closeReader(file, err)
 }
@@ -344,6 +343,8 @@ func (m *UploadError) Error() string {
 }
 
 func (u *uploaderDelegate) upload() (*UploadResult, error) {
+	u.processBar = progressbar.DefaultBytes(u.totalSize, fmt.Sprintf("Uploading %v", u.fileInfo.Name()))
+	defer u.processBar.Finish()
 	if u.totalSize >= 0 && u.totalSize < u.options.PartSize {
 		return u.singlePart()
 	}
