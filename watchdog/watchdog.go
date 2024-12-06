@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/coreos/go-systemd/v22/journal"
 	"github.com/fsnotify/fsnotify"
-	"gopkg.in/yaml.v3"
 )
 
 type config struct {
@@ -147,7 +147,7 @@ func loadConfig() (fileList map[string][]string, procList map[string][]string) {
 		return
 	}
 	signature = string(signatureByte)
-	configFile, err := zipReader.Open("watchdog.yaml")
+	configFile, err := zipReader.Open("watchdog.toml")
 	if err != nil {
 		journal.Print(journal.PriAlert, "Load config file failed: %v\n", err)
 		freeze()
@@ -161,7 +161,7 @@ func loadConfig() (fileList map[string][]string, procList map[string][]string) {
 		return
 	}
 	checkSign(confByte, signature)
-	err = yaml.Unmarshal(confByte, &conf)
+	err = toml.Unmarshal(confByte, &conf)
 	if err != nil {
 		journal.Print(journal.PriAlert, "Unmarshal config failed: %v\n", err)
 		freeze()
