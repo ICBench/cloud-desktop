@@ -214,10 +214,6 @@ func authUser(user string, vpcId int, permission int) utils.UserInfo {
 	return userInfo
 }
 
-func startGUI() {
-
-}
-
 func main() {
 	utils.LoadConfig(configPath, map[string]*string{
 		"username": &loUserName,
@@ -229,10 +225,6 @@ func main() {
 	var rootCmd = &cobra.Command{
 		Use:   "outbox",
 		Short: "Connect to server for get files, manage and review",
-		Args:  cobra.ArbitraryArgs,
-		Run: func(cmd *cobra.Command, args []string) {
-			startGUI()
-		},
 	}
 	rootCmd.PersistentFlags().BoolVarP(&jsonFlag, "json", "j", false, "Use this flag to specify the json format output, GUI will ignore this flag")
 	var cmdInfo = &cobra.Command{
