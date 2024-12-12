@@ -103,9 +103,9 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 					return
 				}
 				if strings.HasSuffix(fileName, ".ident") {
-					maxSize = 1000
+					maxSize = 5000
 				} else {
-					maxSize = 4000
+					maxSize = 10000
 				}
 				stat, err := os.Stat(path + "/" + dir.Name())
 				if err != nil {
@@ -135,11 +135,11 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 				var maxSize = 0
 				switch dir.Name() {
 				case "cmdoutput":
-					maxSize = 1000
+					maxSize = 4000
 				case "cmd.pid":
 					maxSize = 20
 				case "options":
-					maxSize = 1000
+					maxSize = 4000
 				case "state":
 					maxSize = 20
 				case "sshd.pid":
@@ -153,9 +153,9 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 					file.Close()
 					maxSize = 1
 				case ".pulse-client.conf":
-					maxSize = 1000
+					maxSize = 4000
 				case ".pulse-cookie":
-					maxSize = 1000
+					maxSize = 4000
 				default:
 					maxSize = 0
 				}
