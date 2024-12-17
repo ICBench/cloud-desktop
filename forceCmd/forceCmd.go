@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"os"
 	"os/exec"
@@ -84,7 +85,7 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 			path = home + "/" + path
 			dirs, err := os.ReadDir(path)
 			if err != nil {
-				allow = true
+				allow = errors.Is(err, os.ErrNotExist)
 				return
 			}
 			if len(dirs) >= 10 {
@@ -93,7 +94,7 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 			}
 			for _, dir := range dirs {
 				var maxSize int
-				if dir.IsDir() || (dir.Type()&os.ModeSymlink) != 0 {
+				if !dir.Type().IsRegular() {
 					allow = false
 					return
 				}
@@ -128,12 +129,23 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 			path = home + "/" + path
 			dirs, err := os.ReadDir(path)
 			if err != nil {
-				allow = true
+				allow = errors.Is(err, os.ErrNotExist)
 				return
 			}
 			for _, dir := range dirs {
 				var maxSize = 0
 				switch dir.Name() {
+				case "keyboard":
+					kdirs, err := os.ReadDir(path + "/" + dir.Name())
+					if err != nil && !errors.Is(err, os.ErrNotExist) {
+						allow = false
+						return
+					}
+					if len(kdirs) > 0 {
+						allow = false
+						return
+					}
+					continue
 				case "cmdoutput":
 					maxSize = 4000
 				case "cmd.pid":
