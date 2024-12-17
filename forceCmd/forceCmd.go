@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"os"
 	"os/exec"
@@ -84,7 +85,7 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 			path = home + "/" + path
 			dirs, err := os.ReadDir(path)
 			if err != nil {
-				allow = true
+				allow = errors.Is(err, os.ErrNotExist)
 				return
 			}
 			if len(dirs) >= 10 {
@@ -93,7 +94,7 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 			}
 			for _, dir := range dirs {
 				var maxSize int
-				if dir.IsDir() || (dir.Type()&os.ModeSymlink) != 0 {
+				if !dir.Type().IsRegular() {
 					allow = false
 					return
 				}
@@ -103,9 +104,9 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 					return
 				}
 				if strings.HasSuffix(fileName, ".ident") {
-					maxSize = 1000
+					maxSize = 5000
 				} else {
-					maxSize = 4000
+					maxSize = 10000
 				}
 				stat, err := os.Stat(path + "/" + dir.Name())
 				if err != nil {
@@ -128,18 +129,29 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 			path = home + "/" + path
 			dirs, err := os.ReadDir(path)
 			if err != nil {
-				allow = true
+				allow = errors.Is(err, os.ErrNotExist)
 				return
 			}
 			for _, dir := range dirs {
 				var maxSize = 0
 				switch dir.Name() {
+				case "keyboard":
+					kdirs, err := os.ReadDir(path + "/" + dir.Name())
+					if err != nil && !errors.Is(err, os.ErrNotExist) {
+						allow = false
+						return
+					}
+					if len(kdirs) > 0 {
+						allow = false
+						return
+					}
+					continue
 				case "cmdoutput":
-					maxSize = 1000
+					maxSize = 4000
 				case "cmd.pid":
 					maxSize = 20
 				case "options":
-					maxSize = 1000
+					maxSize = 4000
 				case "state":
 					maxSize = 20
 				case "sshd.pid":
@@ -153,9 +165,9 @@ func checkCmd(cmd string) (cmdList []string, allow bool) {
 					file.Close()
 					maxSize = 1
 				case ".pulse-client.conf":
-					maxSize = 1000
+					maxSize = 4000
 				case ".pulse-cookie":
-					maxSize = 1000
+					maxSize = 4000
 				default:
 					maxSize = 0
 				}
