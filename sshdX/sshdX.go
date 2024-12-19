@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 )
 
 const (
+	privateKeyPath    = "/usr/local/etc/sshdX/privateKey"
 	authorizedKeyPath = "/usr/local/etc/sshdX/authorized_keys"
 	forceCmdPath      = "/usr/local/bin/forceCmd"
 )
@@ -58,10 +60,30 @@ func loadConfig() ssh.ServerConfig {
 			return nil, fmt.Errorf("unknown public key for %q", c.User())
 		},
 	}
-	privKey, err := rsa.GenerateKey(rand.Reader, 512)
+	privKeyBytes, err := os.ReadFile(privateKeyPath)
+	var privKey *rsa.PrivateKey
 	if err != nil {
-		journal.Print(journal.PriErr, "Failed to generate host key, err: %v", err)
-		os.Exit(1)
+		if os.IsNotExist(err) {
+			privKey, err = rsa.GenerateKey(rand.Reader, 4096)
+			if err != nil {
+				journal.Print(journal.PriErr, "Failed to create private key: %v", err)
+				os.Exit(1)
+			}
+			privKeyBytes := x509.MarshalPKCS1PrivateKey(privKey)
+			err := os.WriteFile(privateKeyPath, privKeyBytes, 0644)
+			if err != nil {
+				journal.Print(journal.PriNotice, "Failed to save private key: %v", err)
+			}
+		} else {
+			journal.Print(journal.PriErr, "Failed to load private key: %v", err)
+			os.Exit(1)
+		}
+	} else {
+		privKey, err = x509.ParsePKCS1PrivateKey(privKeyBytes)
+		if err != nil {
+			journal.Print(journal.PriErr, "Failed to parse private key: %v", err)
+			os.Exit(1)
+		}
 	}
 	signer, _ := ssh.NewSignerFromKey(privKey)
 	conf.AddHostKey(signer)
@@ -86,18 +108,18 @@ func handleSessionChannel(newChan ssh.NewChannel) {
 	}
 	defer sshChan.Close()
 	for req := range reqs {
-		fmt.Println(req.Type, req.WantReply)
 		switch req.Type {
 		case "exec":
 			sshOriginalCmd := removeInvisibleChar(string(req.Payload[4:]))
 			sshCmd := exec.Command(forceCmdPath)
 			sshCmd.Env = append(sshCmd.Env, fmt.Sprintf("SSH_ORIGINAL_COMMAND=%v", sshOriginalCmd))
+			sshCmd.Env = append(sshCmd.Env, os.Environ()...)
 			out, _ := sshCmd.CombinedOutput()
 			req.Reply(true, nil)
 			sshChan.Write(out)
 			sshChan.CloseWrite()
 		default:
-			req.Reply(false, nil)
+			req.Reply(true, nil)
 		}
 	}
 }
