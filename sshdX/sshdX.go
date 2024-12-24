@@ -131,28 +131,28 @@ func handleDirectTcpipChannel(newChan ssh.NewChannel) {
 	pidBytes, err := portCheckCmd.Output()
 	if err != nil {
 		failInfo := fmt.Sprintf("Fail to get program info on port %v", port)
-		journal.Print(journal.PriErr, failInfo)
+		journal.Print(journal.PriErr, "%v", failInfo)
 		newChan.Reject(ssh.ConnectionFailed, failInfo)
 		return
 	}
 	path, err := os.Readlink(fmt.Sprintf("/proc/%v/exe", strings.TrimSuffix(string(pidBytes), "\n")))
 	if err != nil {
 		failInfo := fmt.Sprintf("Fail to get program info on port %v", port)
-		journal.Print(journal.PriErr, failInfo)
+		journal.Print(journal.PriErr, "%v", failInfo)
 		newChan.Reject(ssh.ConnectionFailed, failInfo)
 		return
 	}
 	absPath, _ := filepath.Abs(path)
 	if absPath != "/usr/bin/x2gokdrive" {
 		failInfo := "Forbidden program"
-		journal.Print(journal.PriErr, failInfo)
+		journal.Print(journal.PriErr, "%v", failInfo)
 		newChan.Reject(ssh.ConnectionFailed, failInfo)
 		return
 	}
 	sshChan, _, err := newChan.Accept()
 	if err != nil {
 		failInfo := "Failed to accept channel"
-		journal.Print(journal.PriErr, failInfo)
+		journal.Print(journal.PriErr, "%v", failInfo)
 		newChan.Reject(ssh.ConnectionFailed, failInfo)
 		return
 	}
@@ -162,7 +162,7 @@ func handleDirectTcpipChannel(newChan ssh.NewChannel) {
 	})
 	if err != nil {
 		failInfo := "Failed to establish connection"
-		journal.Print(journal.PriErr, failInfo)
+		journal.Print(journal.PriErr, "%v", failInfo)
 		return
 	}
 	var wg sync.WaitGroup
