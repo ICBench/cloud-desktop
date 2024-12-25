@@ -41,19 +41,19 @@ var (
 )
 
 func sendApplication(sendFileList []utils.AppFile, dst string) *http.Response {
-	host := fmt.Sprintf("https://%v:9990/apply", serverHost)
+	host := fmt.Sprintf("https://%v/apply", serverHost)
 	jsonData, _ := json.Marshal(sendFileList)
 	return utils.SendReq(client, host, map[string][]byte{"sendfile": jsonData, "dstname": []byte(dst)}, loUserName, &loPrivKey)
 }
 
 func sendCancel(appId string) {
-	host := fmt.Sprintf("https://%v:9990/cancel", serverHost)
+	host := fmt.Sprintf("https://%v/cancel", serverHost)
 	utils.SendReq(client, host, map[string][]byte{"appid": []byte(appId)}, loUserName, &loPrivKey)
 	os.Exit(1)
 }
 
 func sendComplete(appId string) *http.Response {
-	host := fmt.Sprintf("https://%v:9990/complete", serverHost)
+	host := fmt.Sprintf("https://%v/complete", serverHost)
 	return utils.SendReq(client, host, map[string][]byte{"appid": []byte(appId)}, loUserName, &loPrivKey)
 }
 
@@ -159,11 +159,11 @@ func inbox(filePaths []string, dst string) {
 
 func main() {
 	utils.LoadConfig(configPath, map[string]*string{
-		"username": &loUserName,
-		"host":     &serverHost,
+		"UserName":        &loUserName,
+		"InboxServerHost": &serverHost,
 	})
 	utils.LoadCertsAndKeys(caPoolPath, caPool, loPrivKeyPath, &loPrivKey)
-	utils.LoadHttpClient(crtFilePath, keyFilePath, client, caPool, 9992)
+	utils.LoadHttpClient(crtFilePath, keyFilePath, client, caPool)
 	var dst string
 	var rootCmd = &cobra.Command{
 		Use:   "inbox <file(s)>",

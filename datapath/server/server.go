@@ -44,6 +44,8 @@ var (
 	ossOutEndPoint string
 	region         string
 	sqlSource      string
+	inboxListen    string
+	outboxListen   string
 )
 
 func loadCerts() {
@@ -515,7 +517,7 @@ func inboxServer() error {
 		writeRes(w, http.StatusOK, map[string][]byte{})
 	})
 	server := &http.Server{
-		Addr: ":9990",
+		Addr: inboxListen,
 		TLSConfig: &tls.Config{
 			ClientCAs:  caPool,
 			ClientAuth: tls.RequireAndVerifyClientCert,
@@ -889,7 +891,7 @@ func outboxServer() error {
 		writeRes(w, http.StatusOK, map[string][]byte{"userinfo": targetInfoBytes})
 	})
 	server := &http.Server{
-		Addr: ":9991",
+		Addr: outboxListen,
 		TLSConfig: &tls.Config{
 			ClientCAs:  caPool,
 			ClientAuth: tls.RequireAndVerifyClientCert,
@@ -967,11 +969,13 @@ func fileTidy(invalidIdList []int) []int {
 
 func main() {
 	utils.LoadConfig(configPath, map[string]*string{
-		"ossbucket":      &ossBucket,
-		"ossinendpoint":  &ossInEndPoint,
-		"ossoutendpoint": &ossOutEndPoint,
-		"region":         &region,
-		"sqlsource":      &sqlSource,
+		"OssBucket":      &ossBucket,
+		"OssInEndPoint":  &ossInEndPoint,
+		"OssOutEndPoint": &ossOutEndPoint,
+		"Region":         &region,
+		"SqlSource":      &sqlSource,
+		"InboxListen":    &inboxListen,
+		"OutboxListen":   &outboxListen,
 	})
 	loadCerts()
 	connectDb()

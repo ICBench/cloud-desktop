@@ -129,7 +129,7 @@ func LoadCertsAndKeys(caPoolPath string, caPool *x509.CertPool, loPrivKeyPath st
 	*loPrivKey = tmpkey.(ed25519.PrivateKey)
 }
 
-func LoadHttpClient(crtFilePath string, keyFilePath string, client *http.Client, caPool *x509.CertPool, port int) {
+func LoadHttpClient(crtFilePath string, keyFilePath string, client *http.Client, caPool *x509.CertPool) {
 	cert, err := tls.LoadX509KeyPair(crtFilePath, keyFilePath)
 	if err != nil {
 		log.Println("Failed to load certs")
@@ -140,11 +140,6 @@ func LoadHttpClient(crtFilePath string, keyFilePath string, client *http.Client,
 			RootCAs:      caPool,
 			Certificates: []tls.Certificate{cert},
 		},
-		DialContext: (&net.Dialer{
-			LocalAddr: &net.TCPAddr{
-				Port: port,
-			},
-		}).DialContext,
 	}
 }
 
