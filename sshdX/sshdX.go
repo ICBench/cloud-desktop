@@ -27,6 +27,29 @@ const (
 	forceCmdPath      = "/usr/local/bin/forceCmd"
 )
 
+type envMap struct {
+	m sync.Map
+}
+
+func (e *envMap) Store(newEnv []string) {
+	for _, env := range newEnv {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		e.m.Store(parts[0], parts[1])
+	}
+}
+
+func (e *envMap) Load() string {
+	var envBuilder strings.Builder
+	e.m.Range(func(key, value any) bool {
+		envBuilder.WriteString(fmt.Sprintf("export %v=%v; ", key, value))
+		return true
+	})
+	return envBuilder.String()
+}
+
 func loadAuthorizedKeys() map[string]bool {
 	authorizedKeysBytes, err := os.ReadFile(authorizedKeyPath)
 	if err != nil {
@@ -100,7 +123,7 @@ func removeInvisibleChar(src string) string {
 	return builder.String()
 }
 
-func handleSessionChannel(newChan ssh.NewChannel) {
+func handleSessionChannel(newChan ssh.NewChannel, e *envMap) {
 	sshChan, reqs, err := newChan.Accept()
 	if err != nil {
 		journal.Print(journal.PriNotice, "Failed to accept channel: %v", err)
@@ -111,10 +134,16 @@ func handleSessionChannel(newChan ssh.NewChannel) {
 		switch req.Type {
 		case "exec":
 			sshOriginalCmd := removeInvisibleChar(string(req.Payload[4:]))
-			sshCmd := exec.Command(forceCmdPath)
-			sshCmd.Env = append(sshCmd.Env, fmt.Sprintf("SSH_ORIGINAL_COMMAND=%v", sshOriginalCmd))
-			sshCmd.Env = append(sshCmd.Env, os.Environ()...)
-			out, _ := sshCmd.CombinedOutput()
+			e.Store([]string{fmt.Sprintf("SSH_ORIGINAL_COMMAND=%v", sshOriginalCmd)})
+			sshEnv := e.Load()
+			sshCmd := exec.Command("bash", "-c", sshEnv+forceCmdPath+"&& echo \"\n###SSHDX_ENV###\" && env")
+			outs, _ := sshCmd.CombinedOutput()
+			outParts := strings.SplitN(string(outs), "\n###SSHDX_ENV###", 2)
+			if len(outParts) != 2 {
+				continue
+			}
+			out := []byte(outParts[0])
+			e.Store(strings.Split(outParts[1], "\n"))
 			req.Reply(true, nil)
 			sshChan.Write(out)
 			sshChan.CloseWrite()
@@ -179,10 +208,12 @@ func handleDirectTcpipChannel(newChan ssh.NewChannel) {
 }
 
 func handleChannels(sshConn *ssh.ServerConn, sshChans <-chan ssh.NewChannel) {
+	var sshEnv envMap
+	sshEnv.Store(os.Environ())
 	for newChan := range sshChans {
 		switch newChan.ChannelType() {
 		case "session":
-			go handleSessionChannel(newChan)
+			go handleSessionChannel(newChan, &sshEnv)
 		case "direct-tcpip":
 			go handleDirectTcpipChannel(newChan)
 		default:
