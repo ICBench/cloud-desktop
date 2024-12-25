@@ -317,16 +317,23 @@ func DbQuery(db *sql.DB, query string, args ...any) (rows *sql.Rows, err error) 
 	return
 }
 
-func DbExec(db *sql.DB, query string, args ...any) (result sql.Result, err error) {
+func DbExec(db *sql.DB, query string, args ...any) (result []interface{}, err error) {
 	var tx *sql.Tx
+	result = make([]interface{}, 0)
 	maxDuration := iniRetrySec
 	for i := 1; i <= maxRetryTimes; i++ {
 		tx, err = TxBegin(db)
 		if err != nil {
 			return nil, err
 		}
-		result, err = tx.Exec(query, args...)
+		var rows *sql.Rows
+		rows, err = tx.Query(query, args...)
 		if err == nil {
+			for rows.Next() {
+				var ifce interface{}
+				rows.Scan(&ifce)
+				result = append(result, ifce)
+			}
 			break
 		}
 		txErr := TxOp(tx, "Rollback")

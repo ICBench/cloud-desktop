@@ -26,7 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/coreos/go-systemd/v22/journal"
-	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
 )
 
 const (
@@ -71,7 +71,7 @@ func loadCerts() {
 
 func connectDb() {
 	var err error
-	dbClient, err = sql.Open("mysql", sqlSource)
+	dbClient, err = sql.Open("postgres", sqlSource)
 	if err != nil {
 		journal.Print(journal.PriErr, "Invalid database parameter: %v\n", err)
 		os.Exit(1)
@@ -93,18 +93,18 @@ func isAppStatAllow(status int) bool {
 func createNewApplication(userKey ed25519.PublicKey, srcVpcId int, dstVpcId int, sendFileList []utils.AppFile) (int, error) {
 	expTime := time.Now().AddDate(0, 30, 0)
 	user := parseUserFromKey(userKey)
-	result, err := utils.DbExec(dbClient, "INSERT INTO applications (owner,source_vpc_id,destination_vpc_id,approval_status,expiry_time) VALUES (?,?,?,2,?)", user, srcVpcId, dstVpcId, expTime)
+	result, err := utils.DbExec(dbClient, "INSERT INTO applications (owner,source_vpc_id,destination_vpc_id,approval_status,expiry_time) VALUES ($1,$2,$3,2,$4) RETURNING id", user, srcVpcId, dstVpcId, expTime)
 	if err != nil {
 		journal.Print(journal.PriErr, "Failed to create new application: %v", err)
 		return 0, err
 	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		journal.Print(journal.PriErr, "Failed to get application id: %v", err)
-		return 0, err
+	id, ok := result[0].(int64)
+	if !ok {
+		journal.Print(journal.PriErr, "Failed to get application id")
+		return 0, fmt.Errorf("empty result")
 	}
 	for _, sendFile := range sendFileList {
-		_, err = utils.DbExec(dbClient, "INSERT INTO application_file (file_hash,application_id,file_info) VALUES (?,?,?)", sendFile.Hash, id, sendFile.RelPath)
+		_, err = utils.DbExec(dbClient, "INSERT INTO application_file (file_hash,application_id,file_info) VALUES ($1,$2,$3)", sendFile.Hash, id, sendFile.RelPath)
 		if err != nil {
 			journal.Print(journal.PriErr, "Failed to create new application: %v", err)
 			return 0, err
@@ -114,7 +114,7 @@ func createNewApplication(userKey ed25519.PublicKey, srcVpcId int, dstVpcId int,
 }
 
 func checkSign(dataBytes []byte, userName string, signature []byte) ed25519.PublicKey {
-	keyCows, err := utils.DbQuery(dbClient, "SELECT public_key FROM users WHERE user_name=?", userName)
+	keyCows, err := utils.DbQuery(dbClient, "SELECT public_key FROM users WHERE user_name=$1", userName)
 	if err != nil {
 		return nil
 	}
@@ -144,7 +144,7 @@ func getVpcIdByIp(addrStr string) int {
 		return 0
 	}
 	ipValue := utils.InetAtoN(ipStr)
-	vpcRows, err := utils.DbQuery(dbClient, "SELECT vpc_id FROM vpc WHERE start_ip_value<? AND end_ip_value>?", ipValue, ipValue)
+	vpcRows, err := utils.DbQuery(dbClient, "SELECT vpc_id FROM vpc WHERE start_ip_value<$1 AND end_ip_value>$1", ipValue)
 	if err != nil {
 		return -1
 	}
@@ -159,7 +159,7 @@ func getVpcIdByIp(addrStr string) int {
 }
 
 func getVpcIdByName(vpcName string) (int, error) {
-	vpcRows, err := utils.DbQuery(dbClient, "SELECT vpc_id FROM vpc WHERE vpc_name=?", vpcName)
+	vpcRows, err := utils.DbQuery(dbClient, "SELECT vpc_id FROM vpc WHERE vpc_name=$1", vpcName)
 	if err != nil {
 		return 0, fmt.Errorf("failed to access database")
 	}
@@ -168,13 +168,13 @@ func getVpcIdByName(vpcName string) (int, error) {
 	if vpcRows.Next() {
 		vpcRows.Scan(&id)
 	} else {
-		id = 0
+		return 0, fmt.Errorf("no such VPC")
 	}
 	return id, nil
 }
 
 func getVpcInfoById(vpcId int) (vpcName string, cidr string, err error) {
-	vpcRows, err := utils.DbQuery(dbClient, "SELECT vpc_name,cidr FROM vpc WHERE vpc_id=?", vpcId)
+	vpcRows, err := utils.DbQuery(dbClient, "SELECT vpc_name,cidr FROM vpc WHERE vpc_id=$1", vpcId)
 	if err != nil {
 		return
 	}
@@ -199,7 +199,7 @@ func parseUserFromKey(userKey ed25519.PublicKey) (user string) {
 }
 
 func getUserInfoByUserAndVpc(vpcId int, user string) (userName string, permission int, err error) {
-	userRows, err := utils.DbQuery(dbClient, "SELECT user_name FROM users WHERE public_key = ?", user)
+	userRows, err := utils.DbQuery(dbClient, "SELECT user_name FROM users WHERE public_key = $1", user)
 	if err != nil {
 		return
 	}
@@ -209,7 +209,7 @@ func getUserInfoByUserAndVpc(vpcId int, user string) (userName string, permissio
 		return
 	}
 	userRows.Scan(&userName)
-	perRows, err := utils.DbQuery(dbClient, "SELECT permission FROM vpc_user WHERE user_key = ? AND vpc_id = ?", user, vpcId)
+	perRows, err := utils.DbQuery(dbClient, "SELECT permission FROM vpc_user WHERE user_key = $1 AND vpc_id = $2", user, vpcId)
 	if err != nil {
 		return
 	}
@@ -231,7 +231,7 @@ func reviewApp(idStr string, userKey ed25519.PublicKey, statusStr string) error 
 	if err != nil {
 		return err
 	}
-	appRows, err := utils.DbQuery(dbClient, "SELECT destination_vpc_id FROM applications WHERE id=? AND approval_status <> 2", id)
+	appRows, err := utils.DbQuery(dbClient, "SELECT destination_vpc_id FROM applications WHERE id=$1 AND approval_status <> 2", id)
 	if err != nil {
 		return fmt.Errorf("no application %v", idStr)
 	}
@@ -254,11 +254,11 @@ func reviewApp(idStr string, userKey ed25519.PublicKey, statusStr string) error 
 	if err != nil {
 		return fmt.Errorf("user not found")
 	}
-	_, err = utils.DbExec(dbClient, "UPDATE applications SET approval_status=? WHERE id=?", status, id)
+	_, err = utils.DbExec(dbClient, "UPDATE applications SET approval_status=$1 WHERE id=$2", status, id)
 	if err != nil {
 		return fmt.Errorf("failed to update database")
 	}
-	_, err = utils.DbExec(dbClient, "INSERT INTO review_records (reviewer_name,reviewer_key,approval_status,review_time,application_id) VALUES (?,?,?,?,?)", userName, user, status, time.Now(), id)
+	_, err = utils.DbExec(dbClient, "INSERT INTO review_records (reviewer_name,reviewer_key,approval_status,review_time,application_id) VALUES ($1,$2,$3,$4,$5)", userName, user, status, time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("failed to update database")
 	}
@@ -273,7 +273,7 @@ func filterAllowedApp(user string, vpcId int, appStrList []string) (allowedAppLi
 			continue
 		}
 		var appRows *sql.Rows
-		appRows, err = utils.DbQuery(dbClient, "SELECT owner,destination_vpc_id,approval_status FROM applications WHERE id=? AND approval_status <> 2", id)
+		appRows, err = utils.DbQuery(dbClient, "SELECT owner,destination_vpc_id,approval_status FROM applications WHERE id=$1 AND approval_status <> 2", id)
 		if err != nil {
 			return
 		}
@@ -372,7 +372,7 @@ func inboxServer() error {
 		}
 		dst, err := getVpcIdByName(dstStr)
 		if err != nil {
-			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
+			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte(err.Error())})
 			return
 		}
 		if dst == -1 {
@@ -431,7 +431,7 @@ func inboxServer() error {
 			return
 		}
 		appId, _ := strconv.Atoi(string(data["appid"]))
-		appFileRows, err := utils.DbQuery(dbClient, "SELECT file_hash FROM application_file WHERE application_id=?", appId)
+		appFileRows, err := utils.DbQuery(dbClient, "SELECT file_hash FROM application_file WHERE application_id=$1", appId)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
 			return
@@ -470,7 +470,7 @@ func inboxServer() error {
 				}
 			}
 		}
-		appRows, err := utils.DbQuery(dbClient, "SELECT source_vpc_id FROM applications WHERE id=?", appId)
+		appRows, err := utils.DbQuery(dbClient, "SELECT source_vpc_id FROM applications WHERE id=$1", appId)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
 			return
@@ -490,7 +490,7 @@ func inboxServer() error {
 		} else {
 			iniStat = 1
 		}
-		_, err = utils.DbQuery(dbClient, "UPDATE applications SET approval_status=? WHERE id=?", iniStat, appId)
+		_, err = utils.DbQuery(dbClient, "UPDATE applications SET approval_status=$1 WHERE id=$2", iniStat, appId)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
 			return
@@ -508,7 +508,7 @@ func inboxServer() error {
 			return
 		}
 		appId, _ := strconv.Atoi(string(data["appid"]))
-		_, err := utils.DbExec(dbClient, "DELETE FROM applications WHERE id = ?", appId)
+		_, err := utils.DbExec(dbClient, "DELETE FROM applications WHERE id = $1", appId)
 		if err != nil {
 			journal.Print(journal.PriErr, "Application %v rollback failed.", appId)
 		}
@@ -569,7 +569,7 @@ func outboxServer() error {
 			return
 		}
 		user := parseUserFromKey(userKey)
-		perRows, err := utils.DbQuery(dbClient, "SELECT vpc_id,permission FROM vpc_user WHERE user_key=?", user)
+		perRows, err := utils.DbQuery(dbClient, "SELECT vpc_id,permission FROM vpc_user WHERE user_key=$1", user)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
 			return
@@ -585,9 +585,9 @@ func outboxServer() error {
 			}
 			var appRows *sql.Rows
 			if hasReviewPer(permission) {
-				appRows, err = utils.DbQuery(dbClient, "SELECT applications.id,users.user_name,applications.source_vpc_id,applications.destination_vpc_id,applications.approval_status FROM applications INNER JOIN users ON applications.owner=users.public_key WHERE applications.source_vpc_id=? AND applications.approval_status <> 2", vpcId)
+				appRows, err = utils.DbQuery(dbClient, "SELECT applications.id,users.user_name,applications.source_vpc_id,applications.destination_vpc_id,applications.approval_status FROM applications INNER JOIN users ON applications.owner=users.public_key WHERE applications.source_vpc_id=$1 AND applications.approval_status <> 2", vpcId)
 			} else {
-				appRows, err = utils.DbQuery(dbClient, "SELECT applications.id,users.user_name,applications.source_vpc_id,applications.destination_vpc_id,applications.approval_status FROM applications INNER JOIN users ON applications.owner=users.public_key WHERE applications.source_vpc_id=? AND applications.owner=? AND applications.approval_status <> 2", vpcId, user)
+				appRows, err = utils.DbQuery(dbClient, "SELECT applications.id,users.user_name,applications.source_vpc_id,applications.destination_vpc_id,applications.approval_status FROM applications INNER JOIN users ON applications.owner=users.public_key WHERE applications.source_vpc_id=$1 AND applications.owner=$2 AND applications.approval_status <> 2", vpcId, user)
 			}
 			if err != nil {
 				journal.Print(journal.PriErr, "Failed to query application info from database: %v\n", err)
@@ -630,7 +630,7 @@ func outboxServer() error {
 			return
 		}
 		user := parseUserFromKey(userKey)
-		appRows, err := utils.DbQuery(dbClient, "SELECT owner,destination_vpc_id FROM applications WHERE id=? AND approval_status <> 2", id)
+		appRows, err := utils.DbQuery(dbClient, "SELECT owner,destination_vpc_id FROM applications WHERE id=$1 AND approval_status <> 2", id)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Database error")})
 			return
@@ -655,7 +655,7 @@ func outboxServer() error {
 				return
 			}
 		}
-		appFileRows, err := utils.DbQuery(dbClient, "SELECT file_info,file_hash FROM application_file WHERE application_id=?", id)
+		appFileRows, err := utils.DbQuery(dbClient, "SELECT file_info,file_hash FROM application_file WHERE application_id=$1", id)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
 			return
@@ -703,7 +703,7 @@ func outboxServer() error {
 		var fileList = map[string][]utils.AppFile{}
 		for _, appId := range allowedAppList {
 			fileList[appId] = []utils.AppFile{}
-			appFileRows, err := utils.DbQuery(dbClient, "SELECT file_hash,file_info FROM application_file WHERE application_id=?", appId)
+			appFileRows, err := utils.DbQuery(dbClient, "SELECT file_hash,file_info FROM application_file WHERE application_id=$1", appId)
 			if err != nil {
 				continue
 			}
@@ -781,7 +781,7 @@ func outboxServer() error {
 			return
 		}
 		user := parseUserFromKey(userKey)
-		vpcRows, err := utils.DbQuery(dbClient, "SELECT vpc_id FROM vpc_user WHERE user_key=?", user)
+		vpcRows, err := utils.DbQuery(dbClient, "SELECT vpc_id FROM vpc_user WHERE user_key=$1", user)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
 			return
@@ -825,7 +825,7 @@ func outboxServer() error {
 			writeRes(w, http.StatusForbidden, map[string][]byte{"error": []byte("Permission denied, need admin.")})
 			return
 		}
-		userRows, err := utils.DbQuery(dbClient, "SELECT users.user_name,vpc_user.user_key,vpc_user.permission FROM vpc_user INNER JOIN users ON vpc_user.user_key=users.public_key WHERE vpc_user.vpc_id=?", vpcId)
+		userRows, err := utils.DbQuery(dbClient, "SELECT users.user_name,vpc_user.user_key,vpc_user.permission FROM vpc_user INNER JOIN users ON vpc_user.user_key=users.public_key WHERE vpc_user.vpc_id=$1", vpcId)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
 			return
@@ -879,7 +879,7 @@ func outboxServer() error {
 			writeRes(w, http.StatusBadRequest, map[string][]byte{"error": []byte("Invalid permission setting.")})
 			return
 		}
-		_, err = utils.DbExec(dbClient, "INSERT INTO vpc_user (vpc_id,user_key,permission) VALUES (?,?,?) ON DUPLICATE KEY UPDATE permission=?", vpcId, targetUser, targetPer, targetPer)
+		_, err = utils.DbExec(dbClient, "INSERT INTO vpc_user (vpc_id,user_key,permission) VALUES ($1,$2,$3) ON DUPLICATE KEY UPDATE permission=$3", vpcId, targetUser, targetPer)
 		if err != nil {
 			writeRes(w, http.StatusInternalServerError, map[string][]byte{"error": []byte("Failed to access database.")})
 			return
@@ -946,7 +946,7 @@ func deleteOssFile(idList []int) (failedIdList []int) {
 }
 
 func fileTidy(invalidIdList []int) []int {
-	invalidAppRows, err := utils.DbQuery(dbClient, "SELECT id FROM applications WHERE expiry_time < ? OR (expiry_time < ? AND approval_status <> 2)", time.Now(), time.Now().AddDate(0, 30, -1))
+	invalidAppRows, err := utils.DbQuery(dbClient, "SELECT id FROM applications WHERE expiry_time < $1 OR (expiry_time < $2 AND approval_status <> 2)", time.Now(), time.Now().AddDate(0, 30, -1))
 	if err != nil {
 		journal.Print(journal.PriErr, "Error while trying to tidy files: %v\n", err)
 		return invalidIdList
@@ -957,7 +957,7 @@ func fileTidy(invalidIdList []int) []int {
 		invalidAppRows.Scan(&id)
 		invalidIdList = append(invalidIdList, id)
 	}
-	_, err = utils.DbExec(dbClient, "DELETE FROM applications WHERE expiry_time < ?", time.Now())
+	_, err = utils.DbExec(dbClient, "DELETE FROM applications WHERE expiry_time < $1", time.Now())
 	if err != nil {
 		journal.Print(journal.PriErr, "File tidy error: failed to access database.")
 	}

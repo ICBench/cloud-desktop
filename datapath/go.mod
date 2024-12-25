@@ -19,7 +19,6 @@ require (
 )
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/alibabacloud-go/alibabacloud-gateway-spi v0.0.4 // indirect
 	github.com/alibabacloud-go/debug v1.0.1 // indirect
 	github.com/alibabacloud-go/endpoint-util v1.1.0 // indirect
@@ -40,7 +39,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.24.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.28.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.33.0 // indirect
-	github.com/aws/smithy-go v1.22.1 // indirect
+	github.com/aws/smithy-go v1.22.0 // indirect
 	github.com/clbanning/mxj/v2 v2.5.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
@@ -55,7 +54,7 @@ require (
 )
 
 require (
-	github.com/go-sql-driver/mysql v1.8.1
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/lib/pq v1.10.9
 	github.com/spf13/pflag v1.0.5 // indirect
 )
