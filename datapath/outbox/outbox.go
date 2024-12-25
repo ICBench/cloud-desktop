@@ -40,7 +40,7 @@ var (
 )
 
 func queryUserInfo() map[string]string {
-	host := fmt.Sprintf("https://%v:9991/self", serverHost)
+	host := fmt.Sprintf("https://%v/self", serverHost)
 	res := utils.SendReq(client, host, make(map[string][]byte), loUserName, &loPrivKey)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Send request failed http: %v\n", res.StatusCode)
@@ -55,7 +55,7 @@ func queryUserInfo() map[string]string {
 }
 
 func queryAppList() (appList []utils.AppInfo) {
-	host := fmt.Sprintf("https://%v:9991/applist", serverHost)
+	host := fmt.Sprintf("https://%v/applist", serverHost)
 	res := utils.SendReq(client, host, map[string][]byte{}, loUserName, &loPrivKey)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Send request failed http: %v\n", res.StatusCode)
@@ -67,7 +67,7 @@ func queryAppList() (appList []utils.AppInfo) {
 }
 
 func queryOneAppInfo(id int) (appInfo []utils.AppFile, err error) {
-	host := fmt.Sprintf("https://%v:9991/appinfo", serverHost)
+	host := fmt.Sprintf("https://%v/appinfo", serverHost)
 	res := utils.SendReq(client, host, map[string][]byte{"id": []byte(strconv.Itoa(id))}, loUserName, &loPrivKey)
 	if res.StatusCode != http.StatusOK {
 		log.Printf("Send request failed http: %v\n", res.StatusCode)
@@ -95,7 +95,7 @@ func queryAppInfo(idList []int) (appInfo map[int][]utils.AppFile) {
 }
 
 func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAppList []string) {
-	host := fmt.Sprintf("https://%v:9991/download", serverHost)
+	host := fmt.Sprintf("https://%v/download", serverHost)
 	idListBytes, _ := json.Marshal(idList)
 	res := utils.SendReq(client, host, map[string][]byte{"appidlist": idListBytes}, loUserName, &loPrivKey)
 	data := utils.ParseRes(res)
@@ -162,7 +162,7 @@ func downloadFiles(idList []string, basePath string) (allowedAppList, rejectedAp
 }
 
 func reviewApp(appIdList []string, status string) map[string]string {
-	host := fmt.Sprintf("https://%v:9991/review", serverHost)
+	host := fmt.Sprintf("https://%v/review", serverHost)
 	appIdListBytes, _ := json.Marshal(appIdList)
 	res := utils.SendReq(client, host, map[string][]byte{"appidlist": appIdListBytes, "status": []byte(status)}, loUserName, &loPrivKey)
 	data := utils.ParseRes(res)
@@ -176,7 +176,7 @@ func reviewApp(appIdList []string, status string) map[string]string {
 }
 
 func listVpc() []utils.VpcInfo {
-	host := fmt.Sprintf("https://%v:9991/listvpc", serverHost)
+	host := fmt.Sprintf("https://%v/listvpc", serverHost)
 	var vpcList []utils.VpcInfo
 	res := utils.SendReq(client, host, map[string][]byte{}, loUserName, &loPrivKey)
 	data := utils.ParseRes(res)
@@ -189,7 +189,7 @@ func listVpc() []utils.VpcInfo {
 }
 
 func listUserByVpcId(vpcId int) []utils.UserInfo {
-	host := fmt.Sprintf("https://%v:9991/listuser", serverHost)
+	host := fmt.Sprintf("https://%v/listuser", serverHost)
 	var userList []utils.UserInfo
 	res := utils.SendReq(client, host, map[string][]byte{"vpcid": []byte(strconv.Itoa(vpcId))}, loUserName, &loPrivKey)
 	data := utils.ParseRes(res)
@@ -202,7 +202,7 @@ func listUserByVpcId(vpcId int) []utils.UserInfo {
 }
 
 func authUser(user string, vpcId int, permission int) utils.UserInfo {
-	host := fmt.Sprintf("https://%v:9991/authuser", serverHost)
+	host := fmt.Sprintf("https://%v/authuser", serverHost)
 	res := utils.SendReq(client, host, map[string][]byte{"user": []byte(user), "vpcid": []byte(strconv.Itoa(vpcId)), "permission": []byte(strconv.Itoa(permission))}, loUserName, &loPrivKey)
 	data := utils.ParseRes(res)
 	if res.StatusCode != http.StatusOK {
@@ -216,11 +216,11 @@ func authUser(user string, vpcId int, permission int) utils.UserInfo {
 
 func main() {
 	utils.LoadConfig(configPath, map[string]*string{
-		"username": &loUserName,
-		"host":     &serverHost,
+		"UserName":         &loUserName,
+		"OutboxServerHost": &serverHost,
 	})
 	utils.LoadCertsAndKeys(caPoolPath, caPool, loPrivKeyPath, &loPrivKey)
-	utils.LoadHttpClient(crtFilePath, keyFilePath, client, caPool, 9993)
+	utils.LoadHttpClient(crtFilePath, keyFilePath, client, caPool)
 	var jsonFlag bool
 	var rootCmd = &cobra.Command{
 		Use:   "outbox",
