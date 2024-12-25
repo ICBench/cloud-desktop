@@ -9,3 +9,5 @@ Makefile
 */temp/
 */temp
 /temp
+go.work
+go.work.sum
